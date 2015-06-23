@@ -1875,6 +1875,14 @@ W:	http://www.attotech.com
 S:	Supported
 F:	drivers/scsi/esas2r
 
+ATUSB IEEE 802.15.4 RADIO DRIVER
+M:	Stefan Schmidt <stefan@osg.samsung.com>
+L:	linux-wpan@vger.kernel.org
+S:	Maintained
+F:	drivers/net/ieee802154/atusb.c
+F:	drivers/net/ieee802154/atusb.h
+F:	drivers/net/ieee802154/at86rf230.h
+
 AUDIT SUBSYSTEM
 M:	Paul Moore <paul@paul-moore.com>
 M:	Eric Paris <eparis@redhat.com>
@@ -8169,8 +8177,6 @@ P:	rt2x00 project
 M:	Stanislaw Gruszka <sgruszka@redhat.com>
 M:	Helmut Schaa <helmut.schaa@googlemail.com>
 L:	linux-wireless@vger.kernel.org
-L:	users@rt2x00.serialmonkey.com (moderated for non-subscribers)
-W:	http://rt2x00.serialmonkey.com/
 S:	Maintained
 F:	drivers/net/wireless/rt2x00/
 

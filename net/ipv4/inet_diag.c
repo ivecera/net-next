@@ -746,7 +746,7 @@ static int inet_diag_dump_reqs(struct sk_buff *skb, struct sock *sk,
 
 	entry.family = sk->sk_family;
 
-	spin_lock_bh(&icsk->icsk_accept_queue.syn_wait_lock);
+	spin_lock(&icsk->icsk_accept_queue.syn_wait_lock);
 
 	lopt = icsk->icsk_accept_queue.listen_opt;
 	if (!lopt || !listen_sock_qlen(lopt))
@@ -794,7 +794,7 @@ static int inet_diag_dump_reqs(struct sk_buff *skb, struct sock *sk,
 	}
 
 out:
-	spin_unlock_bh(&icsk->icsk_accept_queue.syn_wait_lock);
+	spin_unlock(&icsk->icsk_accept_queue.syn_wait_lock);
 
 	return err;
 }
@@ -1095,6 +1095,8 @@ int inet_diag_handler_get_info(struct sk_buff *skb, struct sock *sk)
 	r = nlmsg_data(nlh);
 	memset(r, 0, sizeof(*r));
 	inet_diag_msg_common_fill(r, sk);
+	if (sk->sk_type == SOCK_DGRAM || sk->sk_type == SOCK_STREAM)
+		r->id.idiag_sport = inet_sk(sk)->inet_sport;
 	r->idiag_state = sk->sk_state;
 
 	if ((err = nla_put_u8(skb, INET_DIAG_PROTOCOL, sk->sk_protocol))) {
