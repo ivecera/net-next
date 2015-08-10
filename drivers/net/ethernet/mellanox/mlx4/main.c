@@ -479,6 +479,14 @@ static int mlx4_dev_cap(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 		}
 	}
 
+	if (mlx4_is_master(dev) && (dev->caps.num_ports == 2) &&
+	    (port_type_array[0] == MLX4_PORT_TYPE_IB) &&
+	    (port_type_array[1] == MLX4_PORT_TYPE_ETH)) {
+		mlx4_warn(dev,
+			  "Granular QoS per VF not supported with IB/Eth configuration\n");
+		dev->caps.flags2 &= ~MLX4_DEV_CAP_FLAG2_QOS_VPP;
+	}
+
 	dev->caps.max_counters = dev_cap->max_counters;
 
 	dev->caps.reserved_qps_cnt[MLX4_QP_REGION_FW] = dev_cap->reserved_qps;
@@ -1674,6 +1682,25 @@ static int map_internal_clock(struct mlx4_dev *dev)
 	return 0;
 }
 
+int mlx4_get_internal_clock_params(struct mlx4_dev *dev,
+				   struct mlx4_clock_params *params)
+{
+	struct mlx4_priv *priv = mlx4_priv(dev);
+
+	if (mlx4_is_slave(dev))
+		return -ENOTSUPP;
+
+	if (!params)
+		return -EINVAL;
+
+	params->bar = priv->fw.clock_bar;
+	params->offset = priv->fw.clock_offset;
+	params->size = MLX4_CLOCK_SIZE;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mlx4_get_internal_clock_params);
+
 static void unmap_internal_clock(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -2246,6 +2273,11 @@ static int mlx4_allocate_default_counters(struct mlx4_dev *dev)
 		} else if (err == -ENOENT) {
 			err = 0;
 			continue;
+		} else if (mlx4_is_slave(dev) && err == -EINVAL) {
+			priv->def_counter[port] = MLX4_SINK_COUNTER_INDEX(dev);
+			mlx4_warn(dev, "can't allocate counter from old PF driver, using index %d\n",
+				  MLX4_SINK_COUNTER_INDEX(dev));
+			err = 0;
 		} else {
 			mlx4_err(dev, "%s: failed to allocate default counter port %d err %d\n",
 				 __func__, port + 1, err);

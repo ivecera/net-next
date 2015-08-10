@@ -103,8 +103,9 @@ __be64 mlx4_ib_get_new_demux_tid(struct mlx4_ib_demux_ctx *ctx)
 }
 
 int mlx4_MAD_IFC(struct mlx4_ib_dev *dev, int mad_ifc_flags,
-		 int port, struct ib_wc *in_wc, struct ib_grh *in_grh,
-		 void *in_mad, void *response_mad)
+		 int port, const struct ib_wc *in_wc,
+		 const struct ib_grh *in_grh,
+		 const void *in_mad, void *response_mad)
 {
 	struct mlx4_cmd_mailbox *inmailbox, *outmailbox;
 	void *inbox;
@@ -212,7 +213,7 @@ static void update_sm_ah(struct mlx4_ib_dev *dev, u8 port_num, u16 lid, u8 sl)
  * Snoop SM MADs for port info, GUID info, and  P_Key table sets, so we can
  * synthesize LID change, Client-Rereg, GID change, and P_Key change events.
  */
-static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad,
+static void smp_snoop(struct ib_device *ibdev, u8 port_num, const struct ib_mad *mad,
 		      u16 prev_lid)
 {
 	struct ib_port_info *pinfo;
@@ -348,7 +349,7 @@ static void node_desc_override(struct ib_device *dev,
 	}
 }
 
-static void forward_trap(struct mlx4_ib_dev *dev, u8 port_num, struct ib_mad *mad)
+static void forward_trap(struct mlx4_ib_dev *dev, u8 port_num, const struct ib_mad *mad)
 {
 	int qpn = mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_LID_ROUTED;
 	struct ib_mad_send_buf *send_buf;
@@ -358,7 +359,8 @@ static void forward_trap(struct mlx4_ib_dev *dev, u8 port_num, struct ib_mad *ma
 
 	if (agent) {
 		send_buf = ib_create_send_mad(agent, qpn, 0, 0, IB_MGMT_MAD_HDR,
-					      IB_MGMT_MAD_DATA, GFP_ATOMIC);
+					      IB_MGMT_MAD_DATA, GFP_ATOMIC,
+					      IB_MGMT_BASE_VERSION);
 		if (IS_ERR(send_buf))
 			return;
 		/*
@@ -714,8 +716,8 @@ static int mlx4_ib_demux_mad(struct ib_device *ibdev, u8 port,
 }
 
 static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
-			struct ib_wc *in_wc, struct ib_grh *in_grh,
-			struct ib_mad *in_mad, struct ib_mad *out_mad)
+			const struct ib_wc *in_wc, const struct ib_grh *in_grh,
+			const struct ib_mad *in_mad, struct ib_mad *out_mad)
 {
 	u16 slid, prev_lid = 0;
 	int err;
@@ -817,8 +819,8 @@ static void edit_counter(struct mlx4_counter *cnt,
 }
 
 static int iboe_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
-			struct ib_wc *in_wc, struct ib_grh *in_grh,
-			struct ib_mad *in_mad, struct ib_mad *out_mad)
+			const struct ib_wc *in_wc, const struct ib_grh *in_grh,
+			const struct ib_mad *in_mad, struct ib_mad *out_mad)
 {
 	struct mlx4_counter counter_stats;
 	struct mlx4_ib_dev *dev = to_mdev(ibdev);
@@ -850,21 +852,39 @@ static int iboe_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 }
 
 int mlx4_ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
-			struct ib_wc *in_wc, struct ib_grh *in_grh,
-			struct ib_mad *in_mad, struct ib_mad *out_mad)
+			const struct ib_wc *in_wc, const struct ib_grh *in_grh,
+			const struct ib_mad_hdr *in, size_t in_mad_size,
+			struct ib_mad_hdr *out, size_t *out_mad_size,
+			u16 *out_mad_pkey_index)
 {
 	struct mlx4_ib_dev *dev = to_mdev(ibdev);
-	switch (rdma_port_get_link_layer(ibdev, port_num)) {
-	case IB_LINK_LAYER_INFINIBAND:
-		if (!mlx4_is_slave(dev->dev))
-			return ib_process_mad(ibdev, mad_flags, port_num, in_wc,
-					      in_grh, in_mad, out_mad);
-	case IB_LINK_LAYER_ETHERNET:
-		return iboe_process_mad(ibdev, mad_flags, port_num, in_wc,
-					  in_grh, in_mad, out_mad);
-	default:
-		return -EINVAL;
+	const struct ib_mad *in_mad = (const struct ib_mad *)in;
+	struct ib_mad *out_mad = (struct ib_mad *)out;
+	enum rdma_link_layer link = rdma_port_get_link_layer(ibdev, port_num);
+
+	if (WARN_ON_ONCE(in_mad_size != sizeof(*in_mad) ||
+			 *out_mad_size != sizeof(*out_mad)))
+		return IB_MAD_RESULT_FAILURE;
+
+	/* iboe_process_mad() which uses the HCA flow-counters to implement IB PMA
+	 * queries, should be called only by VFs and for that specific purpose
+	 */
+	if (link == IB_LINK_LAYER_INFINIBAND) {
+		if (mlx4_is_slave(dev->dev) &&
+		    in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_PERF_MGMT &&
+		    in_mad->mad_hdr.attr_id == IB_PMA_PORT_COUNTERS)
+			return iboe_process_mad(ibdev, mad_flags, port_num, in_wc,
+						in_grh, in_mad, out_mad);
+
+		return ib_process_mad(ibdev, mad_flags, port_num, in_wc,
+				      in_grh, in_mad, out_mad);
 	}
+
+	if (link == IB_LINK_LAYER_ETHERNET)
+		return iboe_process_mad(ibdev, mad_flags, port_num, in_wc,
+					in_grh, in_mad, out_mad);
+
+	return -EINVAL;
 }
 
 static void send_handler(struct ib_mad_agent *agent,
@@ -1762,6 +1782,7 @@ static int create_pv_resources(struct ib_device *ibdev, int slave, int port,
 			       int create_tun, struct mlx4_ib_demux_pv_ctx *ctx)
 {
 	int ret, cq_size;
+	struct ib_cq_init_attr cq_attr = {};
 
 	if (ctx->state != DEMUX_PV_STATE_DOWN)
 		return -EEXIST;
@@ -1790,8 +1811,9 @@ static int create_pv_resources(struct ib_device *ibdev, int slave, int port,
 	if (ctx->has_smi)
 		cq_size *= 2;
 
+	cq_attr.cqe = cq_size;
 	ctx->cq = ib_create_cq(ctx->ib_dev, mlx4_ib_tunnel_comp_handler,
-			       NULL, ctx, cq_size, 0);
+			       NULL, ctx, &cq_attr);
 	if (IS_ERR(ctx->cq)) {
 		ret = PTR_ERR(ctx->cq);
 		pr_err("Couldn't create tunnel CQ (%d)\n", ret);

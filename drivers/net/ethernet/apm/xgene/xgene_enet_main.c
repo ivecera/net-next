@@ -871,6 +871,7 @@ static const struct net_device_ops xgene_ndev_ops = {
 	.ndo_set_mac_address = xgene_enet_set_mac_address,
 };
 
+#ifdef CONFIG_ACPI
 static int xgene_get_port_id_acpi(struct device *dev,
 				  struct xgene_enet_pdata *pdata)
 {
@@ -886,6 +887,7 @@ static int xgene_get_port_id_acpi(struct device *dev,
 
 	return 0;
 }
+#endif
 
 static int xgene_get_port_id_dt(struct device *dev, struct xgene_enet_pdata *pdata)
 {
@@ -946,7 +948,7 @@ static int xgene_enet_get_resources(struct xgene_enet_pdata *pdata)
 	struct resource *res;
 	void __iomem *base_addr;
 	u32 offset;
-	int ret;
+	int ret = 0;
 
 	pdev = pdata->pdev;
 	dev = &pdev->dev;
