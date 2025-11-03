@@ -84,6 +84,7 @@ struct xdp_md;
 struct ethtool_netdev_state;
 struct phy_link_topology;
 struct hwtstamp_provider;
+struct netdev_tx_clk_data;
 
 typedef u32 xdp_features_t;
 
@@ -2398,6 +2399,9 @@ struct net_device {
 #endif
 #if IS_ENABLED(CONFIG_NET_DROP_MONITOR)
 	struct dm_hw_stat_delta __rcu *dm_private;
+#endif
+#if IS_ENABLED(CONFIG_NET_TX_CLK)
+	struct netdev_tx_clk_data *tx_clk_data;
 #endif
 	struct device		dev;
 	const struct attribute_group *sysfs_groups[5];

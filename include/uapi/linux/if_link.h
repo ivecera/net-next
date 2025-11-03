@@ -381,6 +381,8 @@ enum {
 	IFLA_NETNS_IMMUTABLE,
 	IFLA_HEADROOM,
 	IFLA_TAILROOM,
+	IFLA_TX_CLK,
+	IFLA_TX_CLKS,
 	__IFLA_MAX
 };
 
@@ -395,6 +397,15 @@ enum {
 	__IFLA_PROTO_DOWN_REASON_CNT,
 	IFLA_PROTO_DOWN_REASON_MAX = __IFLA_PROTO_DOWN_REASON_CNT - 1
 };
+
+/* TX Clock attributes */
+enum {
+	IFLA_TX_CLK_UNSPEC,
+	IFLA_TX_CLK_PIN_ID,	/* u32, DPLL pin ID */
+	__IFLA_TX_CLK_MAX
+};
+
+#define IFLA_TX_CLK_MAX (__IFLA_TX_CLK_MAX - 1)
 
 /* backwards compatibility for userspace */
 #ifndef __KERNEL__

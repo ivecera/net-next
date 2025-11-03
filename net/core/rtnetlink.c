@@ -59,6 +59,8 @@
 #include <net/addrconf.h>
 #endif
 #include <linux/dpll.h>
+#include <linux/netdev_tx_clk.h>
+#include "tx_clk.h"
 
 #include "dev.h"
 
@@ -1258,6 +1260,30 @@ static size_t rtnl_devlink_port_size(const struct net_device *dev)
 	return size;
 }
 
+static size_t rtnl_tx_clk_size(const struct net_device *dev)
+{
+	struct netdev_tx_clk_data *clk_data;
+	struct netdev_tx_clk_pin_node *node;
+	int pin_count = 0;
+	size_t size;
+
+	clk_data = netdev_get_tx_clk_data((struct net_device *)dev);
+	if (!clk_data || list_empty(&clk_data->pins))
+		return 0;
+
+	/* Count pins */
+	list_for_each_entry(node, &clk_data->pins, node)
+		pin_count++;
+
+	/* IFLA_TX_CLK - current active pin */
+	size = nla_total_size(sizeof(u32));
+
+	/* IFLA_TX_CLKS - available pins array */
+	size += nla_total_size(pin_count * sizeof(u32));
+
+	return size;
+}
+
 static size_t rtnl_dpll_pin_size(const struct net_device *dev)
 {
 	size_t size = nla_total_size(0); /* nest IFLA_DPLL_PIN */
@@ -1325,6 +1351,7 @@ static noinline size_t if_nlmsg_size(const struct net_device *dev,
 	       + nla_total_size(MAX_ADDR_LEN) /* IFLA_PERM_ADDRESS */
 	       + rtnl_devlink_port_size(dev)
 	       + rtnl_dpll_pin_size(dev)
+	       + rtnl_tx_clk_size(dev)
 	       + nla_total_size(8)  /* IFLA_MAX_PACING_OFFLOAD_HORIZON */
 	       + nla_total_size(2)  /* IFLA_HEADROOM */
 	       + nla_total_size(2)  /* IFLA_TAILROOM */
@@ -2002,6 +2029,65 @@ nest_cancel:
 	return ret;
 }
 
+static int rtnl_fill_tx_clk(struct sk_buff *skb, struct net_device *dev)
+{
+	struct netdev_tx_clk_data *clk_data;
+	struct netdev_tx_clk_pin_node *node;
+	struct dpll_pin *active_pin;
+	int i, pin_count;
+	u32 *pin_ids;
+
+	clk_data = netdev_get_tx_clk_data(dev);
+	if (!clk_data || list_empty(&clk_data->pins))
+		return 0;
+
+	/* Count pins to allocate array */
+	pin_count = 0;
+	list_for_each_entry(node, &clk_data->pins, node)
+		pin_count++;
+
+	pin_ids = kcalloc(pin_count, sizeof(u32), GFP_KERNEL);
+	if (!pin_ids)
+		return -ENOMEM;
+
+	/* Query active TX clock pin from driver */
+	active_pin = netdev_tx_clk_get_active_pin(dev);
+	if (!IS_ERR_OR_NULL(active_pin)) {
+		/* Find the pin_id that matches the active pin */
+		mutex_lock(&clk_data->lock);
+		list_for_each_entry(node, &clk_data->pins, node) {
+			if (node->pin == active_pin) {
+				if (nla_put_u32(skb, IFLA_TX_CLK,
+						dpll_pin_id_get(node->pin))) {
+					mutex_unlock(&clk_data->lock);
+					kfree(pin_ids);
+					return -EMSGSIZE;
+				}
+				break;
+			}
+		}
+		mutex_unlock(&clk_data->lock);
+	}
+
+	/* Fill available TX clock pins */
+	mutex_lock(&clk_data->lock);
+	i = 0;
+	list_for_each_entry(node, &clk_data->pins, node) {
+		if (i >= pin_count)
+			break;
+		pin_ids[i++] = dpll_pin_id_get(node->pin);
+	}
+	mutex_unlock(&clk_data->lock);
+
+	if (nla_put(skb, IFLA_TX_CLKS, i * sizeof(u32), pin_ids)) {
+		kfree(pin_ids);
+		return -EMSGSIZE;
+	}
+
+	kfree(pin_ids);
+	return 0;
+}
+
 static int rtnl_fill_dpll_pin(struct sk_buff *skb,
 			      const struct net_device *dev)
 {
@@ -2188,6 +2274,9 @@ static int rtnl_fill_ifinfo(struct sk_buff *skb,
 	if (rtnl_fill_dpll_pin(skb, dev))
 		goto nla_put_failure;
 
+	if (rtnl_fill_tx_clk(skb, dev))
+		goto nla_put_failure;
+
 	nlmsg_end(skb, nlh);
 	return 0;
 
@@ -2258,6 +2347,8 @@ static const struct nla_policy ifla_policy[IFLA_MAX+1] = {
 	[IFLA_NETNS_IMMUTABLE]	= { .type = NLA_REJECT },
 	[IFLA_HEADROOM]		= { .type = NLA_REJECT },
 	[IFLA_TAILROOM]		= { .type = NLA_REJECT },
+	[IFLA_TX_CLK]		= { .type = NLA_U32 },
+	[IFLA_TX_CLKS]		= { .type = NLA_REJECT },
 };
 
 static const struct nla_policy ifla_info_policy[IFLA_INFO_MAX+1] = {
@@ -3397,6 +3488,13 @@ static int do_setlink(const struct sk_buff *skb, struct net_device *dev,
 				goto errout;
 			status |= DO_SETLINK_NOTIFY;
 		}
+	}
+
+	if (tb[IFLA_TX_CLK]) {
+		err = netdev_tx_clk_set_active_pin(dev, nla_get_u32(tb[IFLA_TX_CLK]));
+		if (err < 0)
+			goto errout;
+		status |= DO_SETLINK_NOTIFY;
 	}
 
 errout:

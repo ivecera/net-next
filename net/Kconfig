@@ -543,4 +543,19 @@ config NET_TEST
 
 	  If unsure, say N.
 
+config NET_TX_CLK
+	bool "Network device TX clock infrastructure"
+	depends on NET && DPLL
+	default n
+	help
+	  Enable support for registering DPLL pins as potential transmit clock
+	  sources for network devices. The core networking code tracks the set
+	  of pins provided by drivers and allows the active source to be updated
+	  inside the kernel.
+
+	  This option only provides internal infrastructure. User space control
+	  paths and driver integrations are added by follow-up patches.
+
+	  If unsure, say N.
+
 endif   # if NET
