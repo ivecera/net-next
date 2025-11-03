@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# DPLL simulator driver configuration
+#
+
+config DPLLSIM
+	tristate "Simulated DPLL device"
+	depends on DPLL
+	help
+	  This driver provides a simulated DPLL device for testing
+	  and development purposes. It creates a virtual DPLL device
+	  with configurable pins that can be controlled through the
+	  DPLL subsystem netlink interface.
+
+	  Similar to netdevsim for network devices, dpllsim allows
+	  testing DPLL-related code without requiring actual hardware.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called dpllsim.

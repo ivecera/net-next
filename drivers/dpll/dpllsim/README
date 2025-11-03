@@ -1,0 +1,168 @@
+DPLL Simulator (dpllsim)
+========================
+
+WARNING: EXPERIMENTAL AI-GENERATED CODE
+---------------------------------------
+This is an experimental, AI-generated implementation of a simulated DPLL
+(Digital Phase-Locked Loop) driver. It is intended ONLY for:
+
+  - Testing the Linux DPLL subsystem
+  - Testing userspace tools (e.g., `dpll` from iproute2)
+  - Development and debugging of DPLL-related code
+  - Learning and experimentation
+
+This driver is essentially a random number generator pretending to be a DPLL
+device. All values (phase offsets, FFO, temperature, lock status, etc.) are
+simulated using random drift and probability-based events. DO NOT use this
+for any real timing or synchronization purposes.
+
+
+Quick Start
+-----------
+
+1. Build and load the module:
+
+   $ make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+   $ sudo insmod dpllsim.ko
+
+2. Create a device and configure pins using the setup script:
+
+   $ sudo ./dpllsim-setup-default.sh
+
+3. View the DPLL topology:
+
+   $ dpll device show
+   $ dpll pin show
+
+4. Clean up:
+
+   $ echo 0 | sudo tee /sys/bus/dpllsim/devices/dpllsim0/deploy
+   $ echo 0 | sudo tee /sys/bus/dpllsim/del_device
+   $ sudo rmmod dpllsim
+
+
+Manual Device Creation
+----------------------
+
+Instead of using the setup script, you can manually configure devices:
+
+1. Create a new device with clock_id=0:
+
+   $ echo 0 | sudo tee /sys/bus/dpllsim/new_device
+
+2. Add pins (syntax: "type freq direction priority [parents:id1,id2,...]"):
+
+   Pin types:
+     1 = MUX
+     2 = EXT (external)
+     3 = SYNCE_ETH_PORT
+     4 = INT_OSCILLATOR
+     5 = GNSS
+
+   Directions:
+     1 = INPUT
+     2 = OUTPUT
+
+   Examples:
+   # Add GNSS input pin with priority 0
+   $ echo "5 1 1 0" | sudo tee /sys/bus/dpllsim/devices/dpllsim0/add_pin
+
+   # Add 10MHz external input with priority 1
+   $ echo "2 10000000 1 1" | sudo tee /sys/bus/dpllsim/devices/dpllsim0/add_pin
+
+   # Add MUX pin with parents (recovered clock from pins 0 and 1)
+   $ echo "1 1953125 1 255 parents:0,1" | sudo tee /sys/bus/dpllsim/devices/dpllsim0/add_pin
+
+   # Add output pin
+   $ echo "2 10000000 2 0" | sudo tee /sys/bus/dpllsim/devices/dpllsim0/add_pin
+
+3. Deploy the device to DPLL subsystem:
+
+   $ echo 1 | sudo tee /sys/bus/dpllsim/devices/dpllsim0/deploy
+
+
+Sysfs Interface
+---------------
+
+Bus attributes (/sys/bus/dpllsim/):
+  new_device     - Create new device (write clock_id)
+  del_device     - Delete device by ID (write device ID, e.g., "0" for dpllsim0)
+
+Device attributes (/sys/bus/dpllsim/devices/dpllsimN/):
+  deployed       - Read deployment status (0/1)
+  deploy         - Deploy (1) or undeploy (0) device
+  add_pin        - Add pin before deployment
+  del_pin        - Delete pin by index before deployment
+
+Simulation parameters (can be changed at runtime):
+  lock_time_ms        - Time to acquire lock (default: 2000ms)
+  update_interval_ms  - Periodic update interval (default: 500ms)
+  media_down_prob     - Probability of media down (1/N per update, default: 2400)
+  media_recovery_prob - Probability of recovery (1/N per update, default: 10)
+
+
+Simulated Behavior
+------------------
+
+The simulator mimics realistic DPLL behavior:
+
+- Lock acquisition: Transitions through UNLOCKED -> HOLDOVER -> LOCKED_HO_ACQ -> LOCKED
+- Reference selection: Automatic selection based on pin priority and state
+- Phase offset: Random drift with configurable averaging
+- FFO (Fractional Frequency Offset): Random drift simulation
+- Temperature: Random drift within 0-50°C range
+- Clock quality levels: ITU-T G.8262 quality level simulation
+- Failure simulation: Random media down events on SyncE ports
+- Holdover degradation: Time-based quality degradation per ITU-T specs
+
+Pin hierarchy support:
+- MUX pins can have multiple parent pins
+- Hierarchical MUX-of-MUX configurations
+- Reference sync pairs for output-to-input synchronization
+
+
+Default Topology (via setup script)
+-----------------------------------
+
+The dpllsim-setup-default.sh script creates a complex topology:
+
+Input pins (0-10):
+  - Pin 0: GNSS 1PPS reference
+  - Pin 1: 10MHz SMA bidirectional
+  - Pins 2-5: SyncE recovered clock ports (25MHz)
+  - Pins 6-7: Additional SMA references
+  - Pins 8-9: External references
+  - Pin 10: Internal oscillator
+
+MUX pins (11-15):
+  - Pin 11: SyncE MUX (parents: 2,3,4,5)
+  - Pin 12: Reference MUX (parents: 0,1,6,7)
+  - Pin 13: Oscillator MUX (parents: 8,9,10)
+  - Pin 14: Hierarchical MUX (parents: 11,12,13)
+  - Pin 15: Single-parent MUX (parent: 2)
+
+Output pins (16-35):
+  - 20 output pins (10 differential pairs)
+  - Pairs 0-3: SyncE Ethernet (25MHz)
+  - Pairs 4-5: 1PPS timing
+  - Pairs 6-9: General external (10MHz)
+
+
+Files
+-----
+
+  dpllsim_core.c  - Main driver logic, DPLL ops, pin ops, workqueue
+  dpllsim_bus.c   - Sysfs bus interface, device management
+  dpllsim.h       - Shared structures and declarations
+  Makefile        - Build configuration
+  Kconfig         - Kernel configuration options
+  dpllsim-setup-default.sh - Default topology setup script
+
+
+Author
+------
+
+Petr Oros <poros@redhat.com>
+Copyright (c) 2025 Red Hat, Inc.
+
+License: GPL-2.0-only
