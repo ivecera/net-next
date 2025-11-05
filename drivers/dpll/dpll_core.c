@@ -900,6 +900,24 @@ const struct dpll_pin_ops *dpll_pin_ops(struct dpll_pin_ref *ref)
 	return reg->ops;
 }
 
+/**
+ * dpll_pin_id_get - Get the pin ID from a DPLL pin
+ * @pin: DPLL pin
+ *
+ * Returns: Pin ID assigned by the DPLL subsystem
+ */
+u32 dpll_pin_id_get(const struct dpll_pin *pin)
+{
+	u32 pin_id;
+
+	mutex_lock(&dpll_lock);
+	pin_id = pin ? pin->id : 0;
+	mutex_unlock(&dpll_lock);
+
+	return pin_id;
+}
+EXPORT_SYMBOL_GPL(dpll_pin_id_get);
+
 static int __init dpll_init(void)
 {
 	int ret;
