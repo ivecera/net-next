@@ -52,6 +52,7 @@
 #include <linux/of_net.h>
 #include <linux/pci.h>
 #include <linux/property.h>
+#include <linux/dpll.h>
 #include <net/dst.h>
 #include <net/arp.h>
 #include <net/sock.h>
@@ -639,3 +640,46 @@ int device_get_ethdev_address(struct device *dev, struct net_device *netdev)
 	return ret;
 }
 EXPORT_SYMBOL(device_get_ethdev_address);
+
+struct fwnode_handle *fwnode_get_dpll_pin_node(struct fwnode_handle *fwnode,
+					       const char *name)
+{
+	int index = 0;
+
+	if (name)
+		index = fwnode_property_match_string(fwnode, "dpll-pin-names",
+						     name);
+
+	return fwnode_find_reference(fwnode, "dpll-pins", index);
+}
+EXPORT_SYMBOL(fwnode_get_dpll_pin_node);
+
+struct fwnode_handle *device_get_dpll_pin_node(struct device *dev,
+					       const char *name)
+{
+	return fwnode_get_dpll_pin_node(dev_fwnode(dev), name);
+}
+EXPORT_SYMBOL(device_get_dpll_pin_node);
+
+struct dpll_pin *fwnode_get_dpll_pin(struct fwnode_handle *fwnode,
+				     const char *name)
+{
+	struct fwnode_handle *pin_fwnode;
+	struct dpll_pin *pin;
+
+	pin_fwnode = fwnode_get_dpll_pin_node(fwnode, name);
+	if (IS_ERR(pin_fwnode))
+		return ERR_CAST(pin_fwnode);
+
+	pin = fwnode_dpll_pin_find(pin_fwnode);
+	fwnode_handle_put(pin_fwnode);
+
+	return pin;
+}
+EXPORT_SYMBOL(fwnode_get_dpll_pin);
+
+struct dpll_pin *device_get_dpll_pin(struct device *dev, const char *name)
+{
+	return fwnode_get_dpll_pin(dev_fwnode(dev), name);
+}
+EXPORT_SYMBOL(device_get_dpll_pin);
