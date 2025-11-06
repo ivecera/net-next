@@ -1063,6 +1063,12 @@ attribute-sets:
       -
         name: tailroom
         type: u16
+      -
+        name: tx-clk
+        type: u32
+      -
+        name: tx-clks
+        type: binary
   -
     name: prop-list-link-attrs
     subset-of: link-attrs
@@ -2468,6 +2474,8 @@ operations:
             - devlink-port
             - gso-ipv4-max-size
             - gro-ipv4-max-size
+            - tx-clk
+            - tx-clks
       dump:
         request:
           value: 18
