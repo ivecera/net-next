@@ -393,6 +393,8 @@ struct lan966x_port_qos {
 struct lan966x_port {
 	struct net_device *dev;
 	struct lan966x *lan966x;
+	struct fwnode_handle *node_rclk;
+	struct dpll_pin *pin_rclk;
 
 	u8 chip_port;
 	u16 pvid;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 
+#include <linux/dpll.h>
 #include <linux/module.h>
 #include <linux/if_bridge.h>
 #include <linux/if_vlan.h>
@@ -752,6 +753,18 @@ static void lan966x_cleanup_ports(struct lan966x *lan966x)
 		if (!port)
 			continue;
 
+		/* Drop DPLL pin reference */
+		if (port->pin_rclk) {
+			dpll_netdev_pin_clear(port->dev);
+			dpll_pin_put(port->pin_rclk);
+			port->pin_rclk = NULL;
+		}
+		/* Drop DPLL pin node reference */
+		if (port->node_rclk) {
+			fwnode_handle_put(port->node_rclk);
+			port->node_rclk = NULL;
+		}
+
 		if (port->dev)
 			unregister_netdev(port->dev);
 
@@ -880,6 +893,55 @@ static int lan966x_probe_port(struct lan966x *lan966x, u32 p,
 	lan966x_vlan_port_set_vid(port, HOST_PVID, false, false);
 	lan966x_vlan_port_apply(port);
 	lan966x_vlan_port_rew_host(port);
+
+	/* Try to get fwnode for recovered clock pin */
+	port->node_rclk = fwnode_get_dpll_pin_node(portnp, "rclk");
+	if (IS_ERR(port->node_rclk)) {
+		netdev_warn(dev, "No dpll pin for recovered clock\n");
+		port->node_rclk = NULL;
+		return 0; /* Not an error */
+	}
+
+	/* Check if the pin is already registered */
+	port->pin_rclk = fwnode_get_dpll_pin(portnp, "rclk");
+	if (port->pin_rclk) {
+		/* Set the pin for this network interface */
+		dpll_netdev_pin_set(dev, port->pin_rclk);
+	} else {
+		netdev_info(dev, "dpll pin for rclk not registered yet\n");
+		/* At this point we cannot set the pin for the network
+		 * interface. We need to wait for notification.
+		 */
+	}
+
+	/* Now we should subscribe for DPLL subsystem notifications.
+	 *
+	 * When a DPLL pin is registered then we should do something like:
+	 *
+	 * void lan966x_dpll_pin_reg_event(struct dpll_pin *pin, ...)
+	 * {
+	 *	struct dpll_pin *our_pin;
+	 *
+	 *	our_pin = fwnode_dpll_pin_find(port->node_rclk);
+	 *	if (our_pin == pin) {
+	 *		dpll_netdev_pin_set(dev, pin);
+	 *		port->pin_rclk = pin;
+	 *	} else {
+	 *		dpll_pin_put(our_pin);
+	 *	}
+	 * }
+	 *
+	 * If a DPLL pin is unregistered:
+	 *
+	 * void lan966x_dpll_pin_unreg_event(struct dpll_pin *pin, ...)
+	 * {
+	 *	if (port->pin_rclk == pin) {
+	 *		dpll_netdev_pin_clear(dev);
+	 *		dpll_pin_put(port->pin_rclk);
+	 *		port->pin_rclk = NULL;
+	 *	}
+	 * }
+	 */
 
 	return 0;
 }
