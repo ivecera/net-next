@@ -295,6 +295,8 @@
 
 &port6 {
 	status = "okay";
+	dpll-pin-names = "rclk";
+	dpll-pins = <&synce_in_m2_clk1>;
 	phy-handle = <&phy6>;
 	phy-mode = "rgmii-id";
 	phys = <&serdes 6 RGMII(1)>;
@@ -388,7 +390,7 @@
 							   78125000
 							   100000000>;
 		};
-		pin@2 { /* REF1P */
+		synce_in_m2_clk1: pin@2 { /* REF1P */
 			reg = <2>;
 
 			connection-type = "ext";
