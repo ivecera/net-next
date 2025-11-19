@@ -556,6 +556,373 @@ Required pin level callback operations:
 Every other operation handler is checked for existence and
 ``-EOPNOTSUPP`` is returned in case of absence of specific handler.
 
+Detailed Flow: dpll_pin_on_pin_register()
+==========================================
+
+The ``dpll_pin_on_pin_register()`` function registers a child pin with a
+MUX-type parent pin. This creates a hierarchical pin structure where the
+parent pin acts as a multiplexer, selecting among multiple child pins.
+Understanding this flow is crucial for implementing MUX-type pin support
+in device drivers.
+
+Function Signature
+------------------
+
+.. code-block:: c
+
+	int dpll_pin_on_pin_register(struct dpll_pin *parent,
+	                             struct dpll_pin *pin,
+	                             const struct dpll_pin_ops *ops,
+	                             void *priv)
+
+Parameters:
+
+- ``parent`` - pointer to the parent MUX-type pin
+- ``pin`` - pointer to the child pin being registered
+- ``ops`` - operations callbacks for the child pin
+- ``priv`` - private data pointer passed to callbacks
+
+Prerequisites and Validation
+-----------------------------
+
+Before proceeding with registration, the function performs validation:
+
+1. **Parent Pin Type Check**: Verifies that ``parent->prop.type`` is
+   ``DPLL_PIN_TYPE_MUX``. Only MUX-type pins can have child pins
+   registered with them.
+
+2. **Operations Validation**: Ensures the following required callbacks
+   are provided:
+
+   - ``ops->state_on_pin_get`` - get child pin state on parent
+   - ``ops->direction_get`` - get pin direction
+
+   If any validation fails, the function returns ``-EINVAL``.
+
+Registration Flow
+-----------------
+
+The registration process follows these steps:
+
+Step 1: Acquire Global Lock
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Acquires ``dpll_lock`` mutex to ensure thread-safe operations across the
+entire dpll subsystem. This lock protects all dpll and pin data structures.
+
+Step 2: Add Parent Reference - dpll_xa_ref_pin_add()
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Calls ``dpll_xa_ref_pin_add(&pin->parent_refs, parent, ops, priv, pin)``
+to establish the parent-child relationship.
+
+This function performs the following sub-operations:
+
+a) **Search for Existing Reference**: Iterates through ``pin->parent_refs``
+   xarray to check if a reference to the parent pin already exists:
+
+   - If found with same ops/priv/cookie, increments refcount and returns
+   - If found with different registration, marks as existing reference
+
+b) **Create New Reference (if needed)**: If no reference exists:
+
+   - Allocates new ``struct dpll_pin_ref`` with ``kzalloc()``
+   - Sets ``ref->pin = parent``
+   - Initializes ``ref->registration_list`` as empty list
+   - Inserts into xarray at ``parent->pin_idx`` index
+   - Sets ``refcount = 1``
+
+c) **Create Registration Entry**: Always creates new registration:
+
+   - Allocates new ``struct dpll_pin_registration`` with ``kzalloc()``
+   - Stores ``ops``, ``priv``, and ``cookie`` (the pin pointer)
+   - Increments refcount if reference already existed
+   - Adds registration to ``ref->registration_list``
+
+If this step fails, jumps to ``unlock`` label.
+
+Step 3: Increment Pin Refcount
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Increments the child pin's refcount with ``refcount_inc(&pin->refcount)``
+to prevent the pin from being freed while it has parent references.
+
+Step 4: Register with Parent's DPLL Devices
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Iterates through all DPLL devices that the parent pin is registered with
+using ``xa_for_each(&parent->dpll_refs, i, ref)``. For each DPLL device:
+
+a) Calls ``__dpll_pin_register(ref->dpll, pin, ops, priv, parent)``
+
+   This function performs:
+
+   i. **Add Pin to DPLL**: Calls ``dpll_xa_ref_pin_add(&dpll->pin_refs,
+      pin, ops, priv, cookie)`` where cookie is the parent pin pointer.
+      This establishes the relationship between the child pin and the
+      DPLL device.
+
+   ii. **Add DPLL to Pin**: Calls ``dpll_xa_ref_dpll_add(&pin->dpll_refs,
+       dpll, ops, priv, cookie)`` to create the reverse reference from
+       pin to DPLL.
+
+       The ``dpll_xa_ref_dpll_add()`` function:
+
+       - Searches for existing DPLL reference in ``pin->dpll_refs``
+       - Creates new ``struct dpll_pin_ref`` if not found
+       - Sets ``ref->dpll = dpll``
+       - Inserts into xarray at ``dpll->id`` index
+       - Creates new registration entry with ops, priv, and cookie
+       - Increments refcount appropriately
+
+   iii. **Mark Pin as Registered**: Sets the ``DPLL_REGISTERED`` mark
+        on the pin in the global ``dpll_pin_xa`` xarray using
+        ``xa_set_mark(&dpll_pin_xa, pin->id, DPLL_REGISTERED)``.
+
+   iv. **Send Creation Notification**: Calls ``dpll_pin_create_ntf(pin)``
+       which sends a ``DPLL_CMD_PIN_CREATE_NTF`` netlink notification
+       to userspace, informing that a new pin is now visible.
+
+   If registration with any DPLL fails, saves the index in ``stop`` and
+   jumps to ``dpll_unregister`` label.
+
+b) Sends additional ``dpll_pin_create_ntf(pin)`` notification after
+   successful registration with each DPLL device.
+
+Step 5: Release Lock and Return
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+On success, releases ``dpll_lock`` mutex and returns 0.
+
+Error Recovery Path
+-------------------
+
+If registration with any DPLL device fails (Step 4a fails):
+
+Step 1: Unregister from Already-Registered DPLLs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Iterates through ``parent->dpll_refs`` again using ``xa_for_each()``.
+For each DPLL with index less than ``stop`` (i.e., those that were
+successfully registered):
+
+a) Calls ``__dpll_pin_unregister(ref->dpll, pin, ops, priv, parent)``
+
+   This function performs:
+
+   i. Asserts pin is registered
+   ii. Deletes any reference sync pairs with
+       ``dpll_pin_ref_sync_pair_del(pin->id)``
+   iii. Removes pin from DPLL with
+        ``dpll_xa_ref_pin_del(&dpll->pin_refs, ...)``
+   iv. Removes DPLL from pin with
+       ``dpll_xa_ref_dpll_del(&pin->dpll_refs, ...)``
+   v. Clears ``DPLL_REGISTERED`` mark if ``pin->dpll_refs`` becomes empty
+
+b) Sends ``dpll_pin_delete_ntf(pin)`` notification to userspace
+
+Step 2: Revert Refcount and Parent Reference
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Decrements pin refcount with ``refcount_dec(&pin->refcount)``
+- Removes parent reference with
+  ``dpll_xa_ref_pin_del(&pin->parent_refs, parent, ops, priv, pin)``
+
+  The ``dpll_xa_ref_pin_del()`` function:
+
+  - Finds the matching reference in xarray
+  - Locates matching registration entry
+  - Removes registration from list with ``list_del()`` and frees it
+  - Decrements reference refcount
+  - If refcount reaches 0, erases from xarray and frees reference
+
+Step 3: Release Lock and Return Error
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Releases ``dpll_lock`` mutex and returns the error code.
+
+Data Structure Relationships After Successful Registration
+-----------------------------------------------------------
+
+After successful ``dpll_pin_on_pin_register()``, the following
+relationships are established:
+
+::
+
+    child_pin
+    ├── parent_refs[parent_pin_idx]
+    │   └── ref
+    │       ├── pin -> parent_pin
+    │       ├── refcount
+    │       └── registration_list
+    │           └── reg { ops, priv, cookie=child_pin }
+    │
+    └── dpll_refs[dpll_id] (for each parent's DPLL)
+        └── ref
+            ├── dpll -> dpll_device
+            ├── refcount
+            └── registration_list
+                └── reg { ops, priv, cookie=parent_pin }
+
+    parent_pin
+    └── dpll_refs[dpll_id] (existing, unchanged)
+
+    dpll_device
+    └── pin_refs[child_pin_idx] (new entry)
+        └── ref
+            ├── pin -> child_pin
+            ├── refcount
+            └── registration_list
+                └── reg { ops, priv, cookie=parent_pin }
+
+Key Invariants
+--------------
+
+1. **Atomic Registration**: Either the child pin is successfully
+   registered with all of the parent's DPLL devices, or it is registered
+   with none (all-or-nothing semantics).
+
+2. **Reference Counting**: Each relationship maintains reference counts
+   to prevent premature deallocation. The child pin's refcount includes
+   the parent reference.
+
+3. **Cookie Usage**: The cookie parameter serves different purposes:
+
+   - In ``pin->parent_refs``: cookie is the child pin pointer
+   - In ``pin->dpll_refs``: cookie is the parent pin pointer
+   - This allows distinguishing between direct and indirect registrations
+
+4. **Locking**: All operations are protected by the global ``dpll_lock``
+   mutex, ensuring consistency across the entire subsystem.
+
+5. **Notifications**: Userspace is notified via netlink for each DPLL
+   device that gains visibility of the child pin.
+
+Summary of Subfunctions Called
+-------------------------------
+
+The complete call tree for ``dpll_pin_on_pin_register()``:
+
+.. code-block:: text
+
+    dpll_pin_on_pin_register()
+    ├── mutex_lock(&dpll_lock)
+    ├── dpll_xa_ref_pin_add(&pin->parent_refs, ...)
+    │   ├── xa_for_each() - search for existing reference
+    │   ├── dpll_pin_registration_find() - check if already registered
+    │   ├── kzalloc() - allocate dpll_pin_ref (if new)
+    │   ├── xa_insert() - insert reference into xarray
+    │   ├── refcount_set() or refcount_inc()
+    │   ├── kzalloc() - allocate dpll_pin_registration
+    │   └── list_add_tail() - add registration to list
+    ├── refcount_inc(&pin->refcount)
+    ├── xa_for_each(&parent->dpll_refs, ...) - for each parent DPLL
+    │   ├── __dpll_pin_register(ref->dpll, pin, ...)
+    │   │   ├── dpll_xa_ref_pin_add(&dpll->pin_refs, ...)
+    │   │   │   └── [same internal operations as above]
+    │   │   ├── dpll_xa_ref_dpll_add(&pin->dpll_refs, ...)
+    │   │   │   ├── xa_for_each() - search for existing reference
+    │   │   │   ├── dpll_pin_registration_find()
+    │   │   │   ├── kzalloc() - allocate dpll_pin_ref (if new)
+    │   │   │   ├── xa_insert() - insert into xarray
+    │   │   │   ├── refcount_set() or refcount_inc()
+    │   │   │   ├── kzalloc() - allocate dpll_pin_registration
+    │   │   │   └── list_add_tail()
+    │   │   ├── xa_set_mark(&dpll_pin_xa, pin->id, DPLL_REGISTERED)
+    │   │   └── dpll_pin_create_ntf(pin)
+    │   │       └── dpll_pin_event_send(DPLL_CMD_PIN_CREATE_NTF, pin)
+    │   └── dpll_pin_create_ntf(pin)
+    └── mutex_unlock(&dpll_lock)
+
+    [On Error Path: dpll_unregister]
+    ├── xa_for_each(&parent->dpll_refs, ...) - for each to unregister
+    │   ├── __dpll_pin_unregister(ref->dpll, pin, ...)
+    │   │   ├── dpll_pin_ref_sync_pair_del(pin->id)
+    │   │   ├── dpll_xa_ref_pin_del(&dpll->pin_refs, ...)
+    │   │   │   ├── xa_for_each() - find reference
+    │   │   │   ├── dpll_pin_registration_find()
+    │   │   │   ├── list_del() - remove from registration list
+    │   │   │   ├── kfree() - free registration
+    │   │   │   ├── refcount_dec_and_test()
+    │   │   │   ├── xa_erase() - remove from xarray (if refcount == 0)
+    │   │   │   └── kfree() - free reference (if refcount == 0)
+    │   │   ├── dpll_xa_ref_dpll_del(&pin->dpll_refs, ...)
+    │   │   │   └── [similar to dpll_xa_ref_pin_del]
+    │   │   └── xa_clear_mark() - if dpll_refs empty
+    │   └── dpll_pin_delete_ntf(pin)
+    │       └── dpll_pin_event_send(DPLL_CMD_PIN_DELETE_NTF, pin)
+    ├── refcount_dec(&pin->refcount)
+    ├── dpll_xa_ref_pin_del(&pin->parent_refs, ...)
+    └── mutex_unlock(&dpll_lock)
+
+Usage Example
+-------------
+
+When implementing a device driver that uses MUX-type pins:
+
+.. code-block:: c
+
+    /* Parent MUX pin properties */
+    struct dpll_pin_properties mux_props = {
+        .type = DPLL_PIN_TYPE_MUX,
+        .capabilities = DPLL_PIN_CAPABILITIES_PRIORITY_CAN_CHANGE,
+        /* other properties */
+    };
+
+    /* Child pin properties */
+    struct dpll_pin_properties child_props = {
+        .type = DPLL_PIN_TYPE_SYNCE_ETH_PORT,
+        /* other properties */
+    };
+
+    /* Callback operations for child pin */
+    static const struct dpll_pin_ops child_pin_ops = {
+        .state_on_pin_get = my_state_on_pin_get,  /* Required */
+        .state_on_pin_set = my_state_on_pin_set,
+        .direction_get = my_direction_get,        /* Required */
+        /* other callbacks */
+    };
+
+    /* Registration sequence */
+    struct dpll_pin *parent_pin, *child_pin;
+    int ret;
+
+    /* Get or create parent MUX pin */
+    parent_pin = dpll_pin_get(clock_id, parent_idx, THIS_MODULE,
+                              &mux_props);
+    if (IS_ERR(parent_pin))
+        return PTR_ERR(parent_pin);
+
+    /* Register parent with DPLL device first */
+    ret = dpll_pin_register(dpll, parent_pin, &parent_ops, parent_priv);
+    if (ret)
+        goto put_parent;
+
+    /* Get or create child pin */
+    child_pin = dpll_pin_get(clock_id, child_idx, THIS_MODULE,
+                            &child_props);
+    if (IS_ERR(child_pin)) {
+        ret = PTR_ERR(child_pin);
+        goto unregister_parent;
+    }
+
+    /* Register child with parent pin - this function's operation */
+    ret = dpll_pin_on_pin_register(parent_pin, child_pin,
+                                   &child_pin_ops, child_priv);
+    if (ret)
+        goto put_child;
+
+    /* Success - child is now registered with all parent's DPLLs */
+    return 0;
+
+put_child:
+    dpll_pin_put(child_pin);
+unregister_parent:
+    dpll_pin_unregister(dpll, parent_pin, &parent_ops, parent_priv);
+put_parent:
+    dpll_pin_put(parent_pin);
+    return ret;
+
 The simplest implementation is in the OCP TimeCard driver. The ops
 structures are defined like this:
 
