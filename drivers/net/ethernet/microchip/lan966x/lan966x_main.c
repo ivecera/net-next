@@ -802,6 +802,48 @@ static void lan966x_cleanup_ports(struct lan966x *lan966x)
 		devm_free_irq(lan966x->dev, lan966x->ptp_ext_irq, lan966x);
 }
 
+static int
+lan966x_pin_direction_get(const struct dpll_pin *pin, void *pin_priv,
+			  const struct dpll_device *dpll, void *dpll_priv,
+			  enum dpll_pin_direction *direction,
+			  struct netlink_ext_ack *extack)
+{
+	struct lan966x_port *port = pin_priv;
+
+	netdev_info(port->dev, "%s\n", __func__);
+	*direction = DPLL_PIN_DIRECTION_INPUT;
+
+	return 0;
+}
+
+static int
+lan966x_pin_state_on_pin_get(const struct dpll_pin *pin, void *pin_priv,
+			     const struct dpll_pin *parent_pin,
+			     void *parent_pin_priv,
+			     enum dpll_pin_state *state,
+			     struct netlink_ext_ack *extack)
+{
+	struct lan966x_port *port = pin_priv;
+
+	netdev_info(port->dev, "%s\n", __func__);
+	*state = DPLL_PIN_STATE_CONNECTED;
+
+	return 0;
+}
+
+static struct dpll_pin_ops pin_ops = {
+	.state_on_pin_get = lan966x_pin_state_on_pin_get,
+	.direction_get = lan966x_pin_direction_get,
+};
+
+static struct dpll_pin_properties pin_props = {
+	.board_label = "RCLK BRD",
+	.panel_label = "RCLK PNL",
+	.package_label = "RCLK PKG",
+	.type = DPLL_PIN_TYPE_EXT,
+	.freq_supported_num = 0,
+};
+
 static int lan966x_probe_port(struct lan966x *lan966x, u32 p,
 			      phy_interface_t phy_mode,
 			      struct fwnode_handle *portnp)
@@ -809,6 +851,7 @@ static int lan966x_probe_port(struct lan966x *lan966x, u32 p,
 	struct lan966x_port *port;
 	struct phylink *phylink;
 	struct net_device *dev;
+	struct dpll_pin *pin;
 	int err;
 
 	if (p >= lan966x->num_phys_ports)
@@ -902,46 +945,36 @@ static int lan966x_probe_port(struct lan966x *lan966x, u32 p,
 		return 0; /* Not an error */
 	}
 
+	/* EXPERIMENT */
+
 	/* Check if the pin is already registered */
-	port->pin_rclk = fwnode_get_dpll_pin(portnp, "rclk");
-	if (port->pin_rclk) {
-		/* Set the pin for this network interface */
-		dpll_netdev_pin_set(dev, port->pin_rclk);
-	} else {
-		netdev_info(dev, "dpll pin for rclk not registered yet\n");
-		/* At this point we cannot set the pin for the network
-		 * interface. We need to wait for notification.
-		 */
+	pin = fwnode_get_dpll_pin(portnp, "rclk");
+	if (!pin) {
+		netdev_info(dev, "MUX pin not registered\n");
+
+		return 0;
 	}
 
-	/* Now we should subscribe for DPLL subsystem notifications.
-	 *
-	 * When a DPLL pin is registered then we should do something like:
-	 *
-	 * void lan966x_dpll_pin_reg_event(struct dpll_pin *pin, ...)
-	 * {
-	 *	struct dpll_pin *our_pin;
-	 *
-	 *	our_pin = fwnode_dpll_pin_find(port->node_rclk);
-	 *	if (our_pin == pin) {
-	 *		dpll_netdev_pin_set(dev, pin);
-	 *		port->pin_rclk = pin;
-	 *	} else {
-	 *		dpll_pin_put(our_pin);
-	 *	}
-	 * }
-	 *
-	 * If a DPLL pin is unregistered:
-	 *
-	 * void lan966x_dpll_pin_unreg_event(struct dpll_pin *pin, ...)
-	 * {
-	 *	if (port->pin_rclk == pin) {
-	 *		dpll_netdev_pin_clear(dev);
-	 *		dpll_pin_put(port->pin_rclk);
-	 *		port->pin_rclk = NULL;
-	 *	}
-	 * }
-	 */
+	/* Allocate our pin */
+	port->pin_rclk = dpll_pin_get(4567, DPLL_PIN_IDX_ANY, THIS_MODULE,
+				      &pin_props, NULL);
+	if (!port->pin_rclk) {
+		dpll_pin_put(pin);
+		netdev_err(dev, "Failed to alloc dpll pin\n");
+		return 0;
+	}
+
+	/* Register our pin on top of mux pin from the FW */
+	err = dpll_pin_on_pin_register(pin, port->pin_rclk, &pin_ops, port);
+	if (err) {
+		netdev_err(dev, "Failed to register pin: %pe\n", ERR_PTR(err));
+		dpll_pin_put(port->pin_rclk);
+		dpll_pin_put(pin);
+		return 0;
+	}
+
+	/* Set our pin as recovered clock pin */
+	dpll_netdev_pin_set(dev, port->pin_rclk);
 
 	return 0;
 }

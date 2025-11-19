@@ -10,6 +10,7 @@
 
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/idr.h>
 #include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -22,6 +23,7 @@ DEFINE_MUTEX(dpll_lock);
 
 DEFINE_XARRAY_FLAGS(dpll_device_xa, XA_FLAGS_ALLOC);
 DEFINE_XARRAY_FLAGS(dpll_pin_xa, XA_FLAGS_ALLOC);
+DEFINE_IDA(dpll_pin_idx_ida);
 
 static u32 dpll_device_xa_id;
 static u32 dpll_pin_xa_id;
@@ -491,6 +493,12 @@ dpll_pin_alloc(u64 clock_id, u32 pin_idx, struct module *module,
 	struct dpll_pin *pin;
 	int ret;
 
+	if (pin_idx == DPLL_PIN_IDX_ANY) {
+		pin_idx = ida_alloc(&dpll_pin_idx_ida, GFP_KERNEL);
+		if (pin_idx < 0)
+			return ERR_PTR(pin_idx);
+		pin_idx += (u32)INT_MAX + 1;
+	}
 	pin = kzalloc(sizeof(*pin), GFP_KERNEL);
 	if (!pin)
 		return ERR_PTR(-ENOMEM);
@@ -606,6 +614,8 @@ void dpll_pin_put(struct dpll_pin *pin)
 		xa_destroy(&pin->ref_sync_pins);
 		dpll_pin_prop_free(&pin->prop);
 		fwnode_handle_put(pin->fwnode);
+		if (pin->pin_idx > INT_MAX)
+			ida_free(&dpll_pin_idx_ida, pin->pin_idx - INT_MAX - 1);
 		kfree_rcu(pin, rcu);
 	}
 	mutex_unlock(&dpll_lock);

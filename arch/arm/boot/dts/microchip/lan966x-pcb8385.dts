@@ -393,7 +393,7 @@
 		synce_in_m2_clk1: pin@2 { /* REF1P */
 			reg = <2>;
 
-			connection-type = "ext";
+			connection-type = "mux";
 			esync-control;
 			label = "SyncE IN M2 CLK1";
 			supported-frequencies-hz = /bits/ 64 <1
