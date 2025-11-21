@@ -3752,6 +3752,57 @@ deinit_info:
 	return ret;
 }
 
+static int ice_dpll_notify(struct notifier_block *nb, unsigned long action,
+			   void *data)
+{
+	switch (action) {
+	case DPLL_DEVICE_CREATED: {
+		struct dpll_device_notifier_info *info = data;
+
+		pr_info("ice: DPLL device create, device_id=%u\n",
+			info->device_id);
+		break;
+	}
+	case DPLL_DEVICE_DELETED: {
+		struct dpll_device_notifier_info *info = data;
+
+		pr_info("ice: DPLL device delete, device_id=%u\n",
+			info->device_id);
+		break;
+	}
+	case DPLL_DEVICE_CHANGED: {
+		struct dpll_device_notifier_info *info = data;
+
+		pr_info("ice: DPLL device change, device_id=%u\n",
+			info->device_id);
+		break;
+	}
+	case DPLL_PIN_CREATED: {
+		struct dpll_pin_notifier_info *info = data;
+
+		pr_info("ice: DPLL pin create, pin_id=%u\n", info->pin_id);
+		break;
+	}
+	case DPLL_PIN_DELETED: {
+		struct dpll_pin_notifier_info *info = data;
+
+		pr_info("ice: DPLL pin unregister, pin_id=%u\n", info->pin_id);
+		break;
+	}
+	case DPLL_PIN_CHANGED: {
+		struct dpll_pin_notifier_info *info = data;
+
+		pr_info("ice: DPLL pin change, pin_id=%u\n", info->pin_id);
+		break;
+	}
+	default:
+		pr_info("ice: DPLL unknown event %lu\n", action);
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
 /**
  * ice_dpll_deinit - Disable the driver/HW support for dpll subsystem
  * the dpll device.
@@ -3768,6 +3819,7 @@ void ice_dpll_deinit(struct ice_pf *pf)
 	bool cgu = ice_is_feature_supported(pf, ICE_F_CGU);
 
 	clear_bit(ICE_FLAG_DPLL, pf->flags);
+	unregister_dpll_notifier(&pf->dplls.dpll_nb);
 	if (cgu)
 		ice_dpll_deinit_worker(pf);
 
@@ -3812,10 +3864,17 @@ void ice_dpll_init(struct ice_pf *pf)
 		if (err)
 			goto deinit_pins;
 	}
+	d->dpll_nb.notifier_call = ice_dpll_notify;
+	err = register_dpll_notifier(&d->dpll_nb);
+	if (err)
+		goto deinit_worker;
 	set_bit(ICE_FLAG_DPLL, pf->flags);
 
 	return;
 
+deinit_worker:
+	if (cgu)
+		ice_dpll_deinit_worker(pf);
 deinit_pins:
 	ice_dpll_deinit_pins(pf, cgu);
 deinit_pps:

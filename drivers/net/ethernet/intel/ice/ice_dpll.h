@@ -110,6 +110,7 @@ struct ice_dpll {
  * @input_phase_adj_max: max phase adjust value for an input pins
  * @output_phase_adj_max: max phase adjust value for an output pins
  * @periodic_counter: counter of periodic work executions
+ * @dpll_nb: notifier block for DPLL subsystem notifications
  */
 struct ice_dplls {
 	struct kthread_worker *kworker;
@@ -132,6 +133,7 @@ struct ice_dplls {
 	s32 output_phase_adj_max;
 	u32 periodic_counter;
 	bool generic;
+	struct notifier_block dpll_nb;
 };
 
 #if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
