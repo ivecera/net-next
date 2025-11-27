@@ -22,6 +22,7 @@
 
 #include "lan966x_regs.h"
 #include "lan966x_ifh.h"
+#include "lan966x_dpll.h"
 
 #define TABLE_UPDATE_SLEEP_US		10
 #define TABLE_UPDATE_TIMEOUT_US		100000
@@ -393,6 +394,8 @@ struct lan966x_port_qos {
 struct lan966x_port {
 	struct net_device *dev;
 	struct lan966x *lan966x;
+
+	struct lan966x_dpll dpll;
 
 	u8 chip_port;
 	u16 pvid;

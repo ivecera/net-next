@@ -752,6 +752,8 @@ static void lan966x_cleanup_ports(struct lan966x *lan966x)
 		if (!port)
 			continue;
 
+		lan966x_dpll_cleanup(port);
+
 		if (port->dev)
 			unregister_netdev(port->dev);
 
@@ -880,6 +882,12 @@ static int lan966x_probe_port(struct lan966x *lan966x, u32 p,
 	lan966x_vlan_port_set_vid(port, HOST_PVID, false, false);
 	lan966x_vlan_port_apply(port);
 	lan966x_vlan_port_rew_host(port);
+
+	err = lan966x_dpll_init(port, portnp);
+	if (err) {
+		netdev_err(port->dev, "failed to initialize dpll\n");
+		return err;
+	}
 
 	return 0;
 }
