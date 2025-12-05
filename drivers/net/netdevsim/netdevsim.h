@@ -15,6 +15,7 @@
 
 #include <linux/debugfs.h>
 #include <linux/device.h>
+#include <linux/dpll.h>
 #include <linux/ethtool.h>
 #include <linux/ethtool_netlink.h>
 #include <linux/kernel.h>
@@ -97,6 +98,17 @@ struct nsim_ethtool {
 	struct ethtool_fecparam fec;
 };
 
+struct nsim_dpll {
+	struct dpll_pin *pin;		/* Recovered clock pin */
+	struct dpll_pin *parent_pin;	/* Parent MUX pin (for pin-on-pin) */
+	dpll_tracker tracker;
+	dpll_tracker parent_tracker;
+	u64 clock_id;			/* DPLL clock_id we're attached to */
+	u32 parent_pin_id;		/* Parent MUX pin index */
+	bool attached;			/* Whether we're attached to a DPLL */
+	struct dentry *ddir;		/* debugfs directory */
+};
+
 struct nsim_rq {
 	struct napi_struct napi;
 	struct sk_buff_head skb_queue;
@@ -157,6 +169,7 @@ struct netdevsim {
 	struct dentry *ethtool_ddir;
 
 	struct nsim_ethtool ethtool;
+	struct nsim_dpll dpll;
 	struct netdevsim __rcu *peer;
 
 	struct notifier_block nb;
@@ -416,6 +429,19 @@ static inline bool nsim_dev_port_is_vf(struct nsim_dev_port *nsim_dev_port)
 {
 	return nsim_dev_port->port_type == NSIM_DEV_PORT_TYPE_VF;
 }
+#if IS_ENABLED(CONFIG_DPLL)
+int nsim_dpll_init(struct netdevsim *ns);
+void nsim_dpll_exit(struct netdevsim *ns);
+#else
+static inline int nsim_dpll_init(struct netdevsim *ns)
+{
+	return 0;
+}
+
+static inline void nsim_dpll_exit(struct netdevsim *ns)
+{
+}
+#endif
 #if IS_ENABLED(CONFIG_XFRM_OFFLOAD)
 void nsim_ipsec_init(struct netdevsim *ns);
 void nsim_ipsec_teardown(struct netdevsim *ns);

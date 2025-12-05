@@ -1076,6 +1076,10 @@ static int nsim_init_netdevsim(struct netdevsim *ns)
 	if (err)
 		goto err_unregister_netdev;
 
+	err = nsim_dpll_init(ns);
+	if (err)
+		goto err_psp_uninit;
+
 	if (IS_ENABLED(CONFIG_DEBUG_NET)) {
 		ns->nb.notifier_call = netdev_debug_event;
 		if (register_netdevice_notifier_dev_net(ns->netdev, &ns->nb,
@@ -1085,6 +1089,8 @@ static int nsim_init_netdevsim(struct netdevsim *ns)
 
 	return 0;
 
+err_psp_uninit:
+	nsim_psp_uninit(ns);
 err_unregister_netdev:
 	rtnl_lock();
 	peer = rtnl_dereference(ns->peer);
@@ -1180,6 +1186,8 @@ void nsim_destroy(struct netdevsim *ns)
 	debugfs_remove(ns->qr_dfs);
 	debugfs_remove(ns->pp_dfs);
 	nsim_ethtool_fini(ns);
+
+	nsim_dpll_exit(ns);
 
 	if (ns->nb.notifier_call)
 		unregister_netdevice_notifier_dev_net(ns->netdev, &ns->nb,
