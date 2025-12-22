@@ -109,6 +109,8 @@
 #define KSZ9x31_REMOTE_LOOPBACK_KEEP_PREAMBLE	BIT(2)
 #define KSZ9x31_REMOTE_LOOPBACK_EN		BIT(8)
 
+#define LAN8814_STRAP_STATUS1			0x0
+#define LAN8814_STRAP_STATUS1_PHYAD		GENMASK(4, 0)
 #define LAN8814_SKUS				0xB
 
 #define LAN8814_WIRE_PAIR_MASK			0xF
@@ -4643,12 +4645,23 @@ static int lan8814_probe(struct phy_device *phydev)
 
 	kszphy_parse_led_mode(phydev);
 
-	/* Strap-in value for PHY address, below register read gives starting
-	 * phy address value
-	 */
-	addr = lanphy_read_page_reg(phydev, LAN8814_PAGE_COMMON_REGS, 0) & 0x1F;
-	devm_phy_package_join(&phydev->mdio.dev, phydev,
-			      addr, sizeof(struct lan8814_shared_priv));
+	err = devm_of_phy_package_join(&phydev->mdio.dev, phydev,
+				       sizeof(struct lan8814_shared_priv));
+	if (err < 0) {
+		/* Strap-in value for PHY address, below register read gives
+		 * starting phy address value
+		 */
+		err = lanphy_read_page_reg(phydev, LAN8814_PAGE_COMMON_REGS,
+					   LAN8814_STRAP_STATUS1);
+		if (err < 0)
+			return err;
+
+		addr = FIELD_GET(LAN8814_STRAP_STATUS1_PHYAD, err);
+		err = devm_phy_package_join(&phydev->mdio.dev, phydev, addr,
+					    sizeof(struct lan8814_shared_priv));
+		if (err < 0)
+			return err;
+	}
 
 	/* There are lan8814 SKUs that don't support PTP. Make sure that for
 	 * those skus no PTP device is created. Here we check if the SKU
