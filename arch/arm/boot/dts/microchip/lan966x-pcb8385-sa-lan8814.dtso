@@ -1,0 +1,105 @@
+/dts-v1/;
+/plugin/;
+
+#include "dt-bindings/interrupt-controller/arm-gic.h"
+#include "dt-bindings/interrupt-controller/irq.h"
+#include "dt-bindings/phy/phy-lan966x-serdes.h"
+
+/ {
+	fragment@0 {
+		target-path = "/soc/pinctrl@e2004064";
+		__overlay__ {
+			miim_a_pins: mdio-pins {
+				/* MDC, MDIO */
+				pins =  "GPIO_28", "GPIO_29";
+				function = "miim_a";
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc/mdio@e2004118";
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			pinctrl-0 = <&miim_a_pins>;
+			pinctrl-names = "default";
+			status = "okay";
+
+			ethernet-phy-package@7 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "micrel,lan8814-package";
+				reg = <0x7>;
+
+				phy0: ethernet-phy@0 {
+					reg = <0>;
+					interrupts = <24 IRQ_TYPE_LEVEL_LOW>;
+					interrupt-parent = <&gpio>;
+					microchip,1588-clock-freq = <125000000>;
+				};
+				phy1: ethernet-phy@1 {
+					reg = <1>;
+					interrupts = <24 IRQ_TYPE_LEVEL_LOW>;
+					interrupt-parent = <&gpio>;
+					microchip,1588-clock-freq = <125000000>;
+				};
+				phy2: ethernet-phy@2 {
+					reg = <2>;
+					interrupts = <24 IRQ_TYPE_LEVEL_LOW>;
+					interrupt-parent = <&gpio>;
+					microchip,1588-clock-freq = <125000000>;
+				};
+				phy3: ethernet-phy@3 {
+					reg = <3>;
+					interrupts = <24 IRQ_TYPE_LEVEL_LOW>;
+					interrupt-parent = <&gpio>;
+					microchip,1588-clock-freq = <125000000>;
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/soc/serdes@e202c000";
+		__overlay__ {
+			status = "okay";
+			microchip,s1-tx-inverted;
+		};
+	};
+
+	fragment@3 {
+		target-path = "/soc/switch@e0000000";
+		__overlay__ {
+			status = "okay";
+
+			ethernet-ports {
+				port@0 {
+					status = "okay";
+					phy-handle = <&phy0>;
+					phy-mode = "qsgmii";
+					phys = <&serdes 2 SERDES6G(1)>;
+				};
+				port@1 {
+					status = "okay";
+					phy-handle = <&phy1>;
+					phy-mode = "qsgmii";
+					phys = <&serdes 3 SERDES6G(1)>;
+				};
+				port@2 {
+					status = "okay";
+					phy-handle = <&phy2>;
+					phy-mode = "qsgmii";
+					phys = <&serdes 0 SERDES6G(1)>;
+				};
+				port@3 {
+					status = "okay";
+					phy-handle = <&phy3>;
+					phy-mode = "qsgmii";
+					phys = <&serdes 1 SERDES6G(1)>;
+				};
+			};
+
+		};
+	};
+};
