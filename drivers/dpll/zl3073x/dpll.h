@@ -5,6 +5,8 @@
 
 #include <linux/dpll.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
+#include <linux/ptp_clock_kernel.h>
 
 #include "core.h"
 
@@ -22,6 +24,10 @@
  * @type: DPLL type (PPS or EEC)
  * @lock_status: last saved DPLL lock status
  * @pins: list of pins
+ * @ptp_lock: mutex serializing PTP clock callbacks
+ * @ptp_info: PTP clock info
+ * @ptp_clock: registered PTP clock (or NULL)
+ * @ptp_scaled_ppm: last requested frequency adjustment in scaled ppm
  * @change_work: device change notification work
  */
 struct zl3073x_dpll {
@@ -37,6 +43,10 @@ struct zl3073x_dpll {
 	enum dpll_type			type;
 	enum dpll_lock_status		lock_status;
 	struct list_head		pins;
+	struct mutex			ptp_lock;
+	struct ptp_clock_info		ptp_info;
+	struct ptp_clock		*ptp_clock;
+	long				ptp_scaled_ppm;
 	struct work_struct		change_work;
 };
 

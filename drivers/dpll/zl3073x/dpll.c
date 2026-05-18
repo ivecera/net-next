@@ -3,6 +3,7 @@
 #include <linux/atomic.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
+#include <linux/cleanup.h>
 #include <linux/bug.h>
 #include <linux/container_of.h>
 #include <linux/dev_printk.h>
@@ -15,6 +16,7 @@
 #include <linux/netlink.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
+#include <linux/ptp_clock_kernel.h>
 #include <linux/slab.h>
 #include <linux/sprintf.h>
 
@@ -43,6 +45,7 @@
  * @phase_offset: last saved pin phase offset
  * @freq_offset: last saved fractional frequency offset
  * @measured_freq: last saved measured frequency
+ * @perout_idx: PTP perout channel index, or -1 if not perout-eligible
  */
 struct zl3073x_dpll_pin {
 	struct list_head	list;
@@ -60,6 +63,7 @@ struct zl3073x_dpll_pin {
 	s64			phase_offset;
 	atomic64_t		freq_offset;
 	u32			measured_freq;
+	s8			perout_idx;
 };
 
 /*
@@ -1498,6 +1502,7 @@ zl3073x_dpll_pin_alloc(struct zl3073x_dpll *zldpll, enum dpll_pin_direction dir,
 	pin->dpll = zldpll;
 	pin->dir = dir;
 	pin->id = id;
+	pin->perout_idx = -1;
 
 	return pin;
 }
@@ -1514,6 +1519,44 @@ zl3073x_dpll_pin_free(struct zl3073x_dpll_pin *pin)
 	WARN(pin->dpll_pin, "DPLL pin is still registered\n");
 
 	kfree(pin);
+}
+
+/**
+ * zl3073x_dpll_pin_is_perout - check if output pin is perout-eligible
+ * @pin: DPLL pin to check
+ * @props: pin properties (already fetched by caller)
+ *
+ * An output pin is eligible for PTP periodic output if it is single-ended
+ * (not differential) and supports 1 Hz in its frequency list.
+ *
+ * Return: true if eligible, false otherwise
+ */
+static bool
+zl3073x_dpll_pin_is_perout(struct zl3073x_dpll_pin *pin,
+			   const struct zl3073x_pin_props *props)
+{
+	struct zl3073x_dpll *zldpll = pin->dpll;
+	const struct zl3073x_chan *chan;
+	u8 out_id;
+	int i;
+
+	if (zl3073x_dpll_is_input_pin(pin))
+		return false;
+
+	out_id = zl3073x_output_pin_out_get(pin->id);
+	if (zl3073x_dev_out_is_diff(zldpll->dev, out_id))
+		return false;
+
+	chan = zl3073x_chan_state_get(zldpll->dev, zldpll->id);
+	if (!zl3073x_chan_is_out_stepped(chan, out_id))
+		return false;
+
+	for (i = 0; i < props->dpll_props.freq_supported_num; i++) {
+		if (props->dpll_props.freq_supported[i].min == 1)
+			return true;
+	}
+
+	return false;
 }
 
 /**
@@ -1557,6 +1600,8 @@ zl3073x_dpll_pin_register(struct zl3073x_dpll_pin *pin, u32 index)
 		if (pin->prio == ZL_DPLL_REF_PRIO_NONE)
 			/* Clamp prio to max value */
 			pin->prio = ZL_DPLL_REF_PRIO_MAX;
+	} else if (zl3073x_dpll_pin_is_perout(pin, props)) {
+		pin->perout_idx = zldpll->ptp_info.n_per_out++;
 	}
 
 	/* Create or get existing DPLL pin */
@@ -2136,44 +2181,362 @@ zl3073x_dpll_init_fine_phase_adjust(struct zl3073x_dev *zldev)
 	return rc;
 }
 
+/* Maximum frequency adjustment: +-1% of nominal in ppb */
+#define ZL3073X_DPLL_PTP_MAX_ADJ	10000000
+
 /**
- * zl3073x_dpll_alloc - allocate DPLL device
- * @zldev: pointer to zl3073x device
- * @ch: DPLL channel number
+ * zl3073x_dpll_ptp_gettimex64 - read current time from ToD counters
+ * @info: PTP clock info
+ * @ts: timespec to store current time
+ * @sts: optional system timestamp pair for cross-timestamping
  *
- * Allocates DPLL device structure for given DPLL channel.
- *
- * Return: pointer to DPLL device on success, error pointer on error
+ * Return: 0 on success, <0 on error
  */
-struct zl3073x_dpll *
-zl3073x_dpll_alloc(struct zl3073x_dev *zldev, u8 ch)
+static int zl3073x_dpll_ptp_gettimex64(struct ptp_clock_info *info,
+				       struct timespec64 *ts,
+				       struct ptp_system_timestamp *sts)
 {
-	struct zl3073x_dpll *zldpll;
+	struct zl3073x_dpll *zldpll = container_of(info, struct zl3073x_dpll,
+						   ptp_info);
 
-	zldpll = kzalloc_obj(*zldpll);
-	if (!zldpll)
-		return ERR_PTR(-ENOMEM);
+	guard(mutex)(&zldpll->ptp_lock);
 
-	zldpll->dev = zldev;
-	zldpll->id = ch;
-	INIT_LIST_HEAD(&zldpll->pins);
-	INIT_WORK(&zldpll->change_work, zl3073x_dpll_change_work);
-
-	return zldpll;
+	return zl3073x_chan_tod_read(zldpll->dev, zldpll->id, false, ts, sts);
 }
 
 /**
- * zl3073x_dpll_free - free DPLL device
- * @zldpll: pointer to zl3073x_dpll structure
+ * zl3073x_dpll_ptp_settime64 - set ToD counters to given time
+ * @info: PTP clock info
+ * @ts: timespec with time to set
  *
- * Deallocates given DPLL device previously allocated by @zl3073x_dpll_alloc.
+ * Return: 0 on success, <0 on error
  */
-void
-zl3073x_dpll_free(struct zl3073x_dpll *zldpll)
+static int zl3073x_dpll_ptp_settime64(struct ptp_clock_info *info,
+				      const struct timespec64 *ts)
 {
-	WARN(zldpll->dpll_dev, "DPLL device is still registered\n");
+	struct zl3073x_dpll *zldpll = container_of(info, struct zl3073x_dpll,
+						   ptp_info);
 
-	kfree(zldpll);
+	guard(mutex)(&zldpll->ptp_lock);
+
+	return zl3073x_chan_tod_write(zldpll->dev, zldpll->id, *ts);
+}
+
+/**
+ * zl3073x_dpll_ptp_adjtime_phase_step - adjust sub-second time via phase step
+ * @zldpll: DPLL channel
+ * @delta: time adjustment in nanoseconds (must be within (-NSEC_PER_SEC,
+ *         NSEC_PER_SEC))
+ *
+ * Uses the output phase step mechanism with tod_step=1 to adjust both
+ * the output clock phase and the ToD counter simultaneously. This keeps
+ * outputs and ToD coherent. Only valid in NCO mode.
+ *
+ * Outputs are grouped by synthesizer since the phase step value is in
+ * synthesizer clock cycles. The first synth group with enabled outputs
+ * uses tod_step to adjust both outputs and the ToD counter. Remaining
+ * groups step outputs only. If no synth has enabled outputs, the ToD
+ * counter is stepped alone using an empty output mask (the FW uses the
+ * lowest-ID synth's period for the conversion).
+ *
+ * Return: 0 on success, -EOPNOTSUPP if no synths available, <0 on error
+ */
+static int zl3073x_dpll_ptp_adjtime_phase_step(struct zl3073x_dpll *zldpll,
+					       s64 delta)
+{
+	u16 synth_mask[ZL3073X_NUM_SYNTHS] = {};
+	struct zl3073x_dev *zldev = zldpll->dev;
+	const struct zl3073x_synth *synth;
+	const struct zl3073x_chan *chan;
+	struct zl3073x_dpll_pin *pin;
+	u32 first_synth_freq = 0;
+	bool tod_stepped = false;
+	s32 step_cycles;
+	u32 synth_freq;
+	int rc;
+	u8 i;
+
+	chan = zl3073x_chan_state_get(zldev, zldpll->id);
+
+	/* Build per-synth output masks from registered output pins */
+	list_for_each_entry(pin, &zldpll->pins, list) {
+		u8 out_id, synth_id;
+
+		if (zl3073x_dpll_is_input_pin(pin))
+			continue;
+
+		out_id = zl3073x_output_pin_out_get(pin->id);
+
+		if (!zl3073x_chan_is_out_stepped(chan, out_id))
+			continue;
+
+		synth_id = zl3073x_dev_out_synth_get(zldev, out_id);
+		if (synth_id >= ZL3073X_NUM_SYNTHS) {
+			dev_warn(zldev->dev, "Unexpected synth id for OUT%u\n",
+				 out_id);
+			continue;
+		}
+		synth_mask[synth_id] |= BIT(out_id);
+	}
+
+	/* Process each synth group */
+	for (i = 0; i < ZL3073X_NUM_SYNTHS; i++) {
+		synth = zl3073x_synth_state_get(zldev, i);
+		if (!zl3073x_synth_is_enabled(synth) ||
+		    zl3073x_synth_dpll_get(synth) != zldpll->id)
+			continue;
+
+		synth_freq = zl3073x_synth_freq_get(synth);
+
+		/* Remember lowest-ID synth freq for ToD-only fallback */
+		if (!first_synth_freq)
+			first_synth_freq = synth_freq;
+
+		if (!synth_mask[i])
+			continue;
+
+		step_cycles = div_s64(delta * synth_freq, NSEC_PER_SEC);
+
+		rc = zl3073x_chan_phase_step(zldev, zldpll->id,
+					     synth_mask[i], step_cycles,
+					     !tod_stepped);
+		if (rc)
+			return rc;
+		tod_stepped = true;
+	}
+
+	if (!first_synth_freq)
+		return -EOPNOTSUPP;
+
+	/* No enabled outputs found; step ToD counter only using the
+	 * lowest-ID synth's period (empty output mask).
+	 */
+	if (!tod_stepped) {
+		step_cycles = div_s64(delta * first_synth_freq, NSEC_PER_SEC);
+		return zl3073x_chan_phase_step(zldev, zldpll->id, 0,
+					       step_cycles, true);
+	}
+
+	return 0;
+}
+
+/**
+ * zl3073x_dpll_ptp_adjtime - adjust PTP clock time
+ * @info: PTP clock info
+ * @delta: time adjustment in nanoseconds
+ *
+ * For large deltas (>= 1 second), the seconds part is adjusted via ToD
+ * read-modify-write at 1 Hz boundaries and the sub-second remainder via
+ * output phase step. For sub-second deltas, uses phase step directly.
+ * Falls back to full ToD read-modify-write if phase step is unavailable.
+ *
+ * Return: 0 on success, <0 on error
+ */
+static int zl3073x_dpll_ptp_adjtime(struct ptp_clock_info *info, s64 delta)
+{
+	struct zl3073x_dpll *zldpll = container_of(info, struct zl3073x_dpll,
+						   ptp_info);
+	struct timespec64 ts;
+	int rc;
+
+	if (!delta)
+		return 0;
+
+	guard(mutex)(&zldpll->ptp_lock);
+
+	/* Split off seconds via ToD read-modify-write so the sub-second
+	 * remainder can be applied through the output-coherent phase step.
+	 */
+	if (abs(delta) >= NSEC_PER_SEC) {
+		ts = ns_to_timespec64(delta);
+		delta = ts.tv_nsec;
+		ts.tv_nsec = 0;
+
+		rc = zl3073x_chan_tod_adjust(zldpll->dev, zldpll->id, ts);
+		if (rc)
+			return rc;
+
+		if (!delta)
+			return 0;
+	}
+
+	rc = zl3073x_dpll_ptp_adjtime_phase_step(zldpll, delta);
+	if (rc != -EOPNOTSUPP)
+		return rc;
+
+	return zl3073x_chan_tod_adjust(zldpll->dev, zldpll->id,
+				      ns_to_timespec64(delta));
+}
+
+/**
+ * zl3073x_dpll_ptp_adjfine - adjust PTP clock frequency
+ * @info: PTP clock info
+ * @scaled_ppm: frequency adjustment in scaled ppm (ppm * 2^16)
+ *
+ * Writes the delta frequency offset register.
+ *
+ * Return: 0 on success, <0 on error
+ */
+static int
+zl3073x_dpll_ptp_adjfine(struct ptp_clock_info *info, long scaled_ppm)
+{
+	struct zl3073x_dpll *zldpll = container_of(info, struct zl3073x_dpll,
+						   ptp_info);
+	s64 offset;
+	int rc;
+
+	guard(mutex)(&zldpll->ptp_lock);
+
+	if (zldpll->ptp_scaled_ppm == scaled_ppm)
+		return 0;
+
+	/* Convert scaled_ppm to df_offset in 2^-48 steps:
+	 *   df_offset = -(scaled_ppm * 2^32) / 10^6
+	 *
+	 * Simplify to avoid overflow:
+	 *   df_offset = -(scaled_ppm * 2^26) / 5^6
+	 *   df_offset = -(scaled_ppm * 67108864) / 15625
+	 */
+	offset = -div_s64((s64)scaled_ppm * 67108864LL, 15625);
+
+	rc = zl3073x_chan_df_offset_set(zldpll->dev, zldpll->id, offset);
+	if (!rc)
+		zldpll->ptp_scaled_ppm = scaled_ppm;
+
+	return rc;
+}
+
+/**
+ * zl3073x_dpll_ptp_perout_find_pin - find pin by perout channel index
+ * @zldpll: DPLL channel
+ * @idx: perout channel index to find
+ *
+ * Return: pointer to the pin, or NULL if not found
+ */
+static struct zl3073x_dpll_pin *
+zl3073x_dpll_ptp_perout_find_pin(struct zl3073x_dpll *zldpll, int idx)
+{
+	struct zl3073x_dpll_pin *pin;
+
+	list_for_each_entry(pin, &zldpll->pins, list) {
+		if (pin->perout_idx == idx)
+			return pin;
+	}
+
+	return NULL;
+}
+
+/**
+ * zl3073x_dpll_ptp_enable - enable/disable PTP clock functions
+ * @info: PTP clock info
+ * @rq: the requested clock function and parameters
+ * @on: true to enable, false to disable
+ *
+ * Handles PTP_CLK_REQ_PEROUT requests. Only 1PPS (period = 1s) is supported.
+ * On enable, configures the output divider for 1 Hz. On disable, does nothing
+ * as the signal is not disabled.
+ *
+ * Return: 0 on success, <0 on error
+ */
+static int zl3073x_dpll_ptp_enable(struct ptp_clock_info *info,
+				   struct ptp_clock_request *rq, int on)
+{
+	struct zl3073x_dpll *zldpll = container_of(info, struct zl3073x_dpll,
+						   ptp_info);
+	struct zl3073x_dpll_pin *pin;
+	unsigned int idx;
+	int rc;
+
+	if (rq->type != PTP_CLK_REQ_PEROUT)
+		return -EOPNOTSUPP;
+
+	idx = rq->perout.index;
+	if (idx >= info->n_per_out)
+		return -EINVAL;
+
+	if (!on)
+		return 0;
+
+	/* Only accept exactly 1PPS (period.sec == 1, nsec == 0) */
+	if (rq->perout.period.sec != 1 || rq->perout.period.nsec != 0)
+		return -EINVAL;
+
+	scoped_guard(mutex, &zldpll->ptp_lock) {
+		pin = zl3073x_dpll_ptp_perout_find_pin(zldpll, idx);
+		if (!pin)
+			return -EINVAL;
+
+		/* Already at 1 Hz, nothing to do */
+		if (zl3073x_dev_output_pin_freq_get(zldpll->dev,
+						    pin->id) == 1)
+			return 0;
+
+		rc = zl3073x_dpll_output_pin_frequency_set(pin->dpll_pin,
+							   pin,
+							   zldpll->dpll_dev,
+							   zldpll, 1, NULL);
+	}
+
+	if (!rc)
+		dpll_pin_change_ntf(pin->dpll_pin);
+
+	return rc;
+}
+
+static const struct ptp_clock_info zl3073x_dpll_ptp_clock_info = {
+	.owner		= THIS_MODULE,
+	.max_adj	= ZL3073X_DPLL_PTP_MAX_ADJ,
+	.gettimex64	= zl3073x_dpll_ptp_gettimex64,
+	.settime64	= zl3073x_dpll_ptp_settime64,
+	.adjtime	= zl3073x_dpll_ptp_adjtime,
+	.adjfine	= zl3073x_dpll_ptp_adjfine,
+	.enable		= zl3073x_dpll_ptp_enable,
+};
+
+/**
+ * zl3073x_dpll_ptp_register - register PTP clock for a DPLL channel
+ * @zldpll: DPLL channel to register PTP clock for
+ *
+ * PTP clock is only registered when the channel is in NCO mode.
+ * If the channel is not in NCO mode, this is a no-op.
+ *
+ * Return: 0 on success, <0 on error
+ */
+static int zl3073x_dpll_ptp_register(struct zl3073x_dpll *zldpll)
+{
+	struct zl3073x_dev *zldev = zldpll->dev;
+	const struct zl3073x_chan *chan;
+	struct ptp_clock *ptp_clock;
+
+	chan = zl3073x_chan_state_get(zldev, zldpll->id);
+	if (!zl3073x_chan_mode_is_nco(chan))
+		return 0;
+
+	snprintf(zldpll->ptp_info.name, sizeof(zldpll->ptp_info.name),
+		 "zl3073x-dpll%u", zldpll->id);
+
+	ptp_clock = ptp_clock_register(&zldpll->ptp_info, zldev->dev);
+	if (IS_ERR(ptp_clock)) {
+		dev_err(zldev->dev, "Failed to register PTP clock for DPLL%u\n",
+			zldpll->id);
+		return PTR_ERR(ptp_clock);
+	}
+
+	zldpll->ptp_clock = ptp_clock;
+
+	return 0;
+}
+
+/**
+ * zl3073x_dpll_ptp_unregister - unregister PTP clock for a DPLL channel
+ * @zldpll: DPLL channel to unregister PTP clock for
+ */
+static void zl3073x_dpll_ptp_unregister(struct zl3073x_dpll *zldpll)
+{
+	if (!IS_ERR_OR_NULL(zldpll->ptp_clock)) {
+		ptp_clock_unregister(zldpll->ptp_clock);
+		zldpll->ptp_clock = NULL;
+	}
 }
 
 /**
@@ -2259,6 +2622,50 @@ zl3073x_dpll_ref_sync_pairs_register(struct zl3073x_dpll *zldpll)
 }
 
 /**
+ * zl3073x_dpll_alloc - allocate DPLL device
+ * @zldev: pointer to zl3073x device
+ * @ch: DPLL channel number
+ *
+ * Allocates DPLL device structure for given DPLL channel.
+ *
+ * Return: pointer to DPLL device on success, error pointer on error
+ */
+struct zl3073x_dpll *
+zl3073x_dpll_alloc(struct zl3073x_dev *zldev, u8 ch)
+{
+	struct zl3073x_dpll *zldpll;
+
+	zldpll = kzalloc_obj(*zldpll);
+	if (!zldpll)
+		return ERR_PTR(-ENOMEM);
+
+	zldpll->dev = zldev;
+	zldpll->id = ch;
+	zldpll->ptp_info = zl3073x_dpll_ptp_clock_info;
+	zldpll->ptp_scaled_ppm = LONG_MIN;
+	mutex_init(&zldpll->ptp_lock);
+	INIT_LIST_HEAD(&zldpll->pins);
+	INIT_WORK(&zldpll->change_work, zl3073x_dpll_change_work);
+
+	return zldpll;
+}
+
+/**
+ * zl3073x_dpll_free - free DPLL device
+ * @zldpll: pointer to zl3073x_dpll structure
+ *
+ * Deallocates given DPLL device previously allocated by @zl3073x_dpll_alloc.
+ */
+void
+zl3073x_dpll_free(struct zl3073x_dpll *zldpll)
+{
+	WARN(zldpll->dpll_dev, "DPLL device is still registered\n");
+
+	mutex_destroy(&zldpll->ptp_lock);
+	kfree(zldpll);
+}
+
+/**
  * zl3073x_dpll_register - register DPLL device and all its pins
  * @zldpll: pointer to zl3073x_dpll structure
  *
@@ -2288,6 +2695,13 @@ zl3073x_dpll_register(struct zl3073x_dpll *zldpll)
 		return rc;
 	}
 
+	rc = zl3073x_dpll_ptp_register(zldpll);
+	if (rc) {
+		zl3073x_dpll_pins_unregister(zldpll);
+		zl3073x_dpll_device_unregister(zldpll);
+		return rc;
+	}
+
 	return 0;
 }
 
@@ -2301,7 +2715,7 @@ zl3073x_dpll_register(struct zl3073x_dpll *zldpll)
 void
 zl3073x_dpll_unregister(struct zl3073x_dpll *zldpll)
 {
-	/* Unregister all pins and dpll */
+	zl3073x_dpll_ptp_unregister(zldpll);
 	zl3073x_dpll_pins_unregister(zldpll);
 	zl3073x_dpll_device_unregister(zldpll);
 }
