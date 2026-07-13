@@ -347,12 +347,35 @@ dpll_xa_ref_dpll_del(struct xarray *xa_dplls, struct dpll_device *dpll,
 	}
 }
 
-struct dpll_pin_ref *dpll_xa_ref_dpll_first(struct xarray *xa_refs)
+/**
+ * dpll_xa_ref_dpll_first - find the first owner dpll ref of a pin
+ * @pin: pointer to a dpll pin
+ *
+ * Search pin's dpll_refs for a ref whose dpll matches the pin's
+ * (module, clock_id) tuple, i.e. the dpll registered by the driver
+ * that created the pin. This ensures pin-level attributes are
+ * reported using the owner's ops even when the pin is also
+ * registered with dplls from other drivers.
+ *
+ * For pin-on-pin child pins whose dpll_refs all point to a
+ * different driver's dplls, fall back to the first available ref.
+ *
+ * Return: pointer to the owner's dpll_pin_ref, or the first ref
+ * as a fallback for child pins.
+ */
+struct dpll_pin_ref *dpll_xa_ref_dpll_first(struct dpll_pin *pin)
 {
 	struct dpll_pin_ref *ref;
-	unsigned long i = 0;
+	unsigned long i;
 
-	ref = xa_find(xa_refs, &i, ULONG_MAX, XA_PRESENT);
+	xa_for_each(&pin->dpll_refs, i, ref) {
+		if (ref->dpll->module == pin->module &&
+		    ref->dpll->clock_id == pin->clock_id)
+			return ref;
+	}
+
+	i = 0;
+	ref = xa_find(&pin->dpll_refs, &i, ULONG_MAX, XA_PRESENT);
 	WARN_ON(!ref);
 	return ref;
 }
