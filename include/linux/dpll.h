@@ -59,6 +59,9 @@ struct dpll_device_ops {
 	int (*freq_monitor_get)(const struct dpll_device *dpll, void *dpll_priv,
 				enum dpll_feature_state *state,
 				struct netlink_ext_ack *extack);
+	int (*reset)(const struct dpll_device *dpll, void *dpll_priv,
+		     enum dpll_reset_type type,
+		     struct netlink_ext_ack *extack);
 };
 
 enum dpll_ffo_type {

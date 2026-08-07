@@ -237,6 +237,20 @@ enum dpll_feature_state {
 	DPLL_FEATURE_STATE_ENABLE,
 };
 
+/**
+ * enum dpll_reset_type - defines types of resets that can be performed on a
+ *   dpll device, valid values for DPLL_A_RESET_TYPE attribute
+ * @DPLL_RESET_TYPE_RESYNC: force the dpll to re-lock to its currently selected
+ *   input reference without affecting inputs, outputs or other device settings
+ */
+enum dpll_reset_type {
+	DPLL_RESET_TYPE_RESYNC = 1,
+
+	/* private: */
+	__DPLL_RESET_TYPE_MAX,
+	DPLL_RESET_TYPE_MAX = (__DPLL_RESET_TYPE_MAX - 1)
+};
+
 enum dpll_a {
 	DPLL_A_ID = 1,
 	DPLL_A_MODULE_NAME,
@@ -252,6 +266,7 @@ enum dpll_a {
 	DPLL_A_PHASE_OFFSET_MONITOR,
 	DPLL_A_PHASE_OFFSET_AVG_FACTOR,
 	DPLL_A_FREQUENCY_MONITOR,
+	DPLL_A_RESET_TYPE,
 
 	__DPLL_A_MAX,
 	DPLL_A_MAX = (__DPLL_A_MAX - 1)
@@ -308,6 +323,7 @@ enum dpll_cmd {
 	DPLL_CMD_PIN_CREATE_NTF,
 	DPLL_CMD_PIN_DELETE_NTF,
 	DPLL_CMD_PIN_CHANGE_NTF,
+	DPLL_CMD_DEVICE_RESET,
 
 	__DPLL_CMD_MAX,
 	DPLL_CMD_MAX = (__DPLL_CMD_MAX - 1)

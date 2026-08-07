@@ -305,6 +305,21 @@ definitions:
         name: enable
         doc: |
           feature shall be enabled
+  -
+    type: enum
+    name: reset-type
+    doc: |
+      defines types of resets that can be performed on a dpll device,
+      valid values for DPLL_A_RESET_TYPE attribute
+    entries:
+      -
+        name: resync
+        doc: |
+          force the dpll to re-lock to its currently selected input
+          reference without affecting inputs, outputs or other
+          device settings
+        value: 1
+    render-max: true
 
 attribute-sets:
   -
@@ -377,6 +392,11 @@ attribute-sets:
         doc: Current or desired state of the frequency monitor feature.
           If enabled, dpll device shall measure all currently available
           inputs for their actual input frequency.
+      -
+        name: reset-type
+        type: u32
+        enum: reset-type
+        doc: Type of reset to perform on a dpll device.
   -
     name: pin
     enum-name: dpll_a_pin
@@ -782,6 +802,19 @@ operations:
       doc: Notification about pin configuration being changed
       notify: pin-get
       mcgrp: monitor
+    -
+      name: device-reset
+      doc: Reset a DPLL device
+      attribute-set: dpll
+      flags: [admin-perm]
+
+      do:
+        pre: dpll-pre-doit
+        post: dpll-post-doit
+        request:
+          attributes:
+            - id
+            - reset-type
 
 mcast-groups:
   list:
