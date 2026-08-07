@@ -1610,6 +1610,83 @@ static const struct dpll_pin_ops zl3073x_dpll_nco_pin_ops = {
 	.state_on_dpll_set = zl3073x_dpll_nco_pin_state_on_dpll_set,
 };
 
+static int
+zl3073x_dpll_reset_resync(struct zl3073x_dpll *zldpll,
+			  struct netlink_ext_ack *extack)
+{
+	struct zl3073x_chan chan;
+	bool fast_lock_en;
+	u8 expected;
+	u8 ref;
+	int rc;
+
+	guard(mutex)(&zldpll->lock);
+
+	chan = *zl3073x_chan_state_get(zldpll->dev, zldpll->id);
+
+	/* Fast lock requires a qualified input reference */
+	ref = zl3073x_chan_refsel_ref_get(&chan);
+	if (ref >= ZL3073X_NUM_REFS) {
+		NL_SET_ERR_MSG(extack, "no reference selected");
+		return -EAGAIN;
+	}
+	if (!zl3073x_dev_ref_is_status_ok(zldpll->dev, ref)) {
+		NL_SET_ERR_MSG_FMT(extack,
+				   "selected input REF%u%c is not qualified",
+				   ref / 2, zl3073x_is_p_pin(ref) ? 'P' : 'N');
+		return -EAGAIN;
+	}
+
+	fast_lock_en = zl3073x_chan_is_fast_lock_enabled(&chan);
+
+	/* Force enable fast lock to trigger re-convergence */
+	zl3073x_chan_fast_lock_set(&chan, true);
+	zl3073x_chan_fast_lock_force_set(&chan, true);
+	rc = zl3073x_chan_state_set(zldpll->dev, zldpll->id, &chan);
+	if (rc) {
+		NL_SET_ERR_MSG(extack, "failed to force fast lock");
+		return rc;
+	}
+
+	/* Wait for DPLL to enter FAST_LOCK state */
+	expected = FIELD_PREP(ZL_DPLL_REFSEL_STATUS_STATE,
+			      ZL_DPLL_REFSEL_STATUS_STATE_FAST_LOCK);
+	rc = zl3073x_poll_u8(zldpll->dev,
+			     ZL_REG_DPLL_REFSEL_STATUS(zldpll->id),
+			     ZL_DPLL_REFSEL_STATUS_STATE, expected,
+			     ZL_POLL_FAST_LOCK_TIMEOUT_US);
+	if (rc)
+		NL_SET_ERR_MSG(extack,
+			       "timeout waiting for fast lock state");
+
+	/* Restore original fast_lock_ctrl regardless of poll result to
+	 * avoid leaving the hardware stuck in forced fast-lock mode.
+	 */
+	zl3073x_chan_fast_lock_set(&chan, fast_lock_en);
+	zl3073x_chan_fast_lock_force_set(&chan, false);
+	if (zl3073x_chan_state_set(zldpll->dev, zldpll->id, &chan)) {
+		NL_SET_ERR_MSG(extack, "failed to restore fast lock state");
+		rc = rc ?: -EIO;
+	}
+
+	return rc;
+}
+
+static int
+zl3073x_dpll_reset(const struct dpll_device *dpll, void *dpll_priv,
+		   enum dpll_reset_type type, struct netlink_ext_ack *extack)
+{
+	struct zl3073x_dpll *zldpll = dpll_priv;
+
+	switch (type) {
+	case DPLL_RESET_TYPE_RESYNC:
+		return zl3073x_dpll_reset_resync(zldpll, extack);
+	default:
+		NL_SET_ERR_MSG(extack, "unsupported reset type");
+		return -EOPNOTSUPP;
+	}
+}
+
 static const struct dpll_device_ops zl3073x_dpll_device_ops = {
 	.lock_status_get = zl3073x_dpll_lock_status_get,
 	.mode_get = zl3073x_dpll_mode_get,
@@ -1620,6 +1697,7 @@ static const struct dpll_device_ops zl3073x_dpll_device_ops = {
 	.phase_offset_monitor_set = zl3073x_dpll_phase_offset_monitor_set,
 	.freq_monitor_get = zl3073x_dpll_freq_monitor_get,
 	.freq_monitor_set = zl3073x_dpll_freq_monitor_set,
+	.reset = zl3073x_dpll_reset,
 	.supported_modes_get = zl3073x_dpll_supported_modes_get,
 };
 

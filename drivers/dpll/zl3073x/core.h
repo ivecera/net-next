@@ -22,6 +22,7 @@ struct zl3073x_dpll;
 
 /* Per-operation poll timeouts */
 #define ZL_POLL_DF_READ_TIMEOUT_US	(25 * USEC_PER_MSEC)
+#define ZL_POLL_FAST_LOCK_TIMEOUT_US	(50 * USEC_PER_MSEC)
 #define ZL_POLL_FREQ_MEAS_TIMEOUT_US	(50 * USEC_PER_MSEC)
 #define ZL_POLL_HWREG_TIMEOUT_US	(50 * USEC_PER_MSEC)
 #define ZL_POLL_MB_TIMEOUT_US		(30 * USEC_PER_MSEC)
@@ -144,8 +145,16 @@ struct zl3073x_hwreg_seq_item {
 
 int zl3073x_mb_op(struct zl3073x_dev *zldev, unsigned int op_reg, u8 op_val,
 		  unsigned int mask_reg, u16 mask_val);
-int zl3073x_poll_zero_u8(struct zl3073x_dev *zldev, unsigned int reg,
-			 u8 mask, unsigned int timeout_us);
+int zl3073x_poll_u8(struct zl3073x_dev *zldev, unsigned int reg,
+		    u8 mask, u8 expected, unsigned int timeout_us);
+
+static inline int zl3073x_poll_zero_u8(struct zl3073x_dev *zldev,
+				       unsigned int reg, u8 mask,
+				       unsigned int timeout_us)
+{
+	return zl3073x_poll_u8(zldev, reg, mask, 0, timeout_us);
+}
+
 int zl3073x_read_u8(struct zl3073x_dev *zldev, unsigned int reg, u8 *val);
 int zl3073x_read_u16(struct zl3073x_dev *zldev, unsigned int reg, u16 *val);
 int zl3073x_read_u32(struct zl3073x_dev *zldev, unsigned int reg, u32 *val);
