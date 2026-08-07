@@ -16,6 +16,7 @@ struct zl3073x_dev;
 /**
  * struct zl3073x_chan - DPLL channel state
  * @ctrl: DPLL control register value
+ * @fast_lock_ctrl: fast lock control register value
  * @mode_refsel: mode and reference selection register value
  * @ref_prio: reference priority registers (4 bits per ref, P/N packed)
  * @mon_status: monitor status register value
@@ -25,6 +26,7 @@ struct zl3073x_dev;
 struct zl3073x_chan {
 	struct_group(cfg,
 		u8	ctrl;
+		u8	fast_lock_ctrl;
 		u8	mode_refsel;
 		u8	ref_prio[ZL3073X_NUM_REFS / 2];
 	);
@@ -263,6 +265,42 @@ static inline u8 zl3073x_chan_refsel_state_get(const struct zl3073x_chan *chan)
 static inline u8 zl3073x_chan_refsel_ref_get(const struct zl3073x_chan *chan)
 {
 	return FIELD_GET(ZL_DPLL_REFSEL_STATUS_REFSEL, chan->refsel_status);
+}
+
+/**
+ * zl3073x_chan_is_fast_lock_enabled - check if fast lock is enabled
+ * @chan: pointer to channel state
+ *
+ * Return: true if fast lock master enable is set, false otherwise
+ */
+static inline bool
+zl3073x_chan_is_fast_lock_enabled(const struct zl3073x_chan *chan)
+{
+	return !!(chan->fast_lock_ctrl & ZL_DPLL_FAST_LOCK_CTRL_MASTER_EN);
+}
+
+/**
+ * zl3073x_chan_fast_lock_set - enable or disable fast lock
+ * @chan: pointer to channel state
+ * @enable: true to enable, false to disable
+ */
+static inline void
+zl3073x_chan_fast_lock_set(struct zl3073x_chan *chan, bool enable)
+{
+	FIELD_MODIFY(ZL_DPLL_FAST_LOCK_CTRL_MASTER_EN,
+		     &chan->fast_lock_ctrl, enable);
+}
+
+/**
+ * zl3073x_chan_fast_lock_force_set - enable or disable forced fast lock
+ * @chan: pointer to channel state
+ * @enable: true to force fast lock, false to clear
+ */
+static inline void
+zl3073x_chan_fast_lock_force_set(struct zl3073x_chan *chan, bool enable)
+{
+	FIELD_MODIFY(ZL_DPLL_FAST_LOCK_CTRL_FORCE_EN,
+		     &chan->fast_lock_ctrl, enable);
 }
 
 #endif /* _ZL3073X_CHAN_H */
