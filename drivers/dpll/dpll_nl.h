@@ -41,6 +41,7 @@ int dpll_nl_pin_id_get_doit(struct sk_buff *skb, struct genl_info *info);
 int dpll_nl_pin_get_doit(struct sk_buff *skb, struct genl_info *info);
 int dpll_nl_pin_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb);
 int dpll_nl_pin_set_doit(struct sk_buff *skb, struct genl_info *info);
+int dpll_nl_device_reset_doit(struct sk_buff *skb, struct genl_info *info);
 
 enum {
 	DPLL_NLGRP_MONITOR,
