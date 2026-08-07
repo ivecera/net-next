@@ -308,34 +308,33 @@ int zl3073x_write_u48(struct zl3073x_dev *zldev, unsigned int reg, u64 val)
 }
 
 /**
- * zl3073x_poll_zero_u8 - wait for register to be cleared by device
+ * zl3073x_poll_u8 - wait for register masked value to match expected value
  * @zldev: zl3073x device pointer
  * @reg: register to poll (has to be 8bit register)
  * @mask: bit mask for polling
+ * @expected: expected value after masking
  * @timeout_us: timeout in microseconds
  *
- * Waits for bits specified by @mask in register @reg value to be cleared
- * by the device.
+ * Waits until (register & @mask) == @expected.
  *
  * Returns: 0 on success, <0 on error
  */
-int zl3073x_poll_zero_u8(struct zl3073x_dev *zldev, unsigned int reg,
-			 u8 mask, unsigned int timeout_us)
+int zl3073x_poll_u8(struct zl3073x_dev *zldev, unsigned int reg,
+		    u8 mask, u8 expected, unsigned int timeout_us)
 {
 	unsigned int sleep_us = timeout_us / 50;
 	unsigned int val;
 
-	/* Check the register is 8bit */
 	if (ZL_REG_SIZE(reg) != 1) {
 		dev_err(zldev->dev, "Invalid reg 0x%04lx size for polling\n",
 			ZL_REG_ADDR(reg));
 		return -EINVAL;
 	}
 
-	/* Map the register address to virtual range */
 	reg = ZL_REG_ADDR(reg) + ZL_RANGE_OFFSET;
 
-	return regmap_read_poll_timeout(zldev->regmap, reg, val, !(val & mask),
+	return regmap_read_poll_timeout(zldev->regmap, reg, val,
+					(val & mask) == expected,
 					sleep_us, timeout_us);
 }
 
