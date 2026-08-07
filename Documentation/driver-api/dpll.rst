@@ -304,6 +304,31 @@ as the divider.
   ``DPLL_A_FREQUENCY_MONITOR``    attr state of a feature
   =============================== ========================
 
+Device reset
+============
+
+Some DPLL devices may support resetting parts of their state without a
+full device reset. The reset types supported by a device are reported in
+the ``DPLL_A_RESET_TYPE_SUPPORTED`` attribute of the ``DPLL_CMD_DEVICE_GET``
+response. The user requests a reset with the ``DPLL_CMD_DEVICE_RESET``
+command and the ``DPLL_A_RESET_TYPE`` attribute set to one of the
+supported ``enum dpll_reset_type`` values. A request for a type that the
+device does not support is rejected. A successful reset is followed by a
+device change notification.
+
+A driver supports device reset by implementing both the ``reset`` and
+``supported_reset_types_get`` callbacks in ``struct dpll_device_ops``.
+The latter sets a bit for each supported ``enum dpll_reset_type`` value,
+and the core only calls ``reset`` with one of those types. The core
+also sends the device change notification after a successful reset, so
+the callback does not send it itself.
+
+  ================================ =================================
+  ``DPLL_A_RESET_TYPE``            attr type of reset to perform
+  ``DPLL_A_RESET_TYPE_SUPPORTED``  attr reset type supported by the
+                                   device
+  ================================ =================================
+
 Embedded SYNC
 =============
 
@@ -398,6 +423,12 @@ suffix according to attribute purpose.
   ``DPLL_CMD_DEVICE_SET``              command to set dpll device config
     ``DPLL_A_ID``                      attr internal dpll device index
     ``DPLL_A_MODE``                    attr selection mode to configure
+  ==================================== =================================
+
+  ==================================== =================================
+  ``DPLL_CMD_DEVICE_RESET``            command to reset a dpll device
+    ``DPLL_A_ID``                      attr internal dpll device index
+    ``DPLL_A_RESET_TYPE``              attr type of reset to perform
   ==================================== =================================
 
 Constants identifying command types for pins uses a
