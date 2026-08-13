@@ -173,6 +173,10 @@
 #define ZL_DPLL_CTRL_TOD_STEP_RST		BIT(2)
 #define ZL_DPLL_CTRL_NCO_AUTO_READ		BIT(7)
 
+#define ZL_REG_DPLL_CMD(_idx)						\
+	ZL_REG_IDX(_idx, 5, 0x06, 1, ZL3073X_MAX_CHANNELS, 4)
+#define ZL_DPLL_CMD_CLEAR_HO			BIT(3)
+
 #define ZL_REG_DPLL_DF_READ(_idx)					\
 	ZL_REG_IDX(_idx, 5, 0x28, 1, ZL3073X_MAX_CHANNELS, 1)
 #define ZL_DPLL_DF_READ_SEM			BIT(4)
