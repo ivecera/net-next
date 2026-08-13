@@ -319,6 +319,11 @@ definitions:
           reference without affecting inputs, outputs or other
           device settings
         value: 1
+      -
+        name: holdover
+        doc: |
+          clear the dpll holdover filter and storage, resetting any
+          accumulated holdover state
     render-max: true
 
 attribute-sets:
