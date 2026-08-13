@@ -242,9 +242,12 @@ enum dpll_feature_state {
  *   dpll device, valid values for DPLL_A_RESET_TYPE attribute
  * @DPLL_RESET_TYPE_RESYNC: force the dpll to re-lock to its currently selected
  *   input reference without affecting inputs, outputs or other device settings
+ * @DPLL_RESET_TYPE_HOLDOVER: clear the dpll holdover filter and storage,
+ *   resetting any accumulated holdover state
  */
 enum dpll_reset_type {
 	DPLL_RESET_TYPE_RESYNC = 1,
+	DPLL_RESET_TYPE_HOLDOVER,
 
 	/* private: */
 	__DPLL_RESET_TYPE_MAX,

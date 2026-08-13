@@ -91,7 +91,7 @@ static const struct nla_policy dpll_pin_set_nl_policy[DPLL_A_PIN_REFERENCE_SYNC 
 /* DPLL_CMD_DEVICE_RESET - do */
 static const struct nla_policy dpll_device_reset_nl_policy[DPLL_A_RESET_TYPE + 1] = {
 	[DPLL_A_ID] = { .type = NLA_U32, },
-	[DPLL_A_RESET_TYPE] = NLA_POLICY_RANGE(NLA_U32, 1, 1),
+	[DPLL_A_RESET_TYPE] = NLA_POLICY_RANGE(NLA_U32, 1, 2),
 };
 
 /* Ops table for dpll */
