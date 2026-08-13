@@ -638,3 +638,27 @@ int zl3073x_chan_state_set(struct zl3073x_dev *zldev, u8 index,
 
 	return 0;
 }
+
+/**
+ * zl3073x_chan_holdover_reset - clear holdover history for a DPLL channel
+ * @zldev: pointer to zl3073x_dev structure
+ * @index: DPLL channel index
+ *
+ * Clears the holdover filter, holdover storage and ho_ready status
+ * by setting the self-clearing clear_ho bit in the dpll_cmd register.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_chan_holdover_reset(struct zl3073x_dev *zldev, u8 index)
+{
+	int rc;
+
+	rc = zl3073x_write_u8(zldev, ZL_REG_DPLL_CMD(index),
+			      ZL_DPLL_CMD_CLEAR_HO);
+	if (rc)
+		return rc;
+
+	return zl3073x_poll_zero_u8(zldev, ZL_REG_DPLL_CMD(index),
+				    ZL_DPLL_CMD_CLEAR_HO,
+				    ZL_POLL_HO_CLEAR_TIMEOUT_US);
+}
