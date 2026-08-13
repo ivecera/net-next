@@ -1789,6 +1789,29 @@ zl3073x_dpll_reset_resync(struct zl3073x_dpll *zldpll,
 }
 
 static int
+zl3073x_dpll_reset_holdover(struct zl3073x_dpll *zldpll,
+			    struct netlink_ext_ack *extack)
+{
+	int rc;
+
+	guard(mutex)(&zldpll->lock);
+
+	rc = zl3073x_chan_holdover_reset(zldpll->dev, zldpll->id);
+	if (rc) {
+		NL_SET_ERR_MSG(extack, "failed to clear holdover history");
+		return rc;
+	}
+
+	/* Refresh the cached channel status so the change notification sent
+	 * after a successful reset reports the cleared holdover state. On
+	 * failure the periodic monitor catches up later.
+	 */
+	zl3073x_chan_state_update(zldpll->dev, zldpll->id);
+
+	return 0;
+}
+
+static int
 zl3073x_dpll_reset(const struct dpll_device *dpll, void *dpll_priv,
 		   enum dpll_reset_type type, struct netlink_ext_ack *extack)
 {
@@ -1797,6 +1820,8 @@ zl3073x_dpll_reset(const struct dpll_device *dpll, void *dpll_priv,
 	switch (type) {
 	case DPLL_RESET_TYPE_RESYNC:
 		return zl3073x_dpll_reset_resync(zldpll, extack);
+	case DPLL_RESET_TYPE_HOLDOVER:
+		return zl3073x_dpll_reset_holdover(zldpll, extack);
 	default:
 		NL_SET_ERR_MSG(extack, "unsupported reset type");
 		return -EOPNOTSUPP;
@@ -1808,7 +1833,11 @@ zl3073x_dpll_supported_reset_types_get(const struct dpll_device *dpll,
 				       void *dpll_priv, unsigned long *types,
 				       struct netlink_ext_ack *extack)
 {
+	struct zl3073x_dpll *zldpll = dpll_priv;
+
 	__set_bit(DPLL_RESET_TYPE_RESYNC, types);
+	if (zl3073x_dev_is_ho_clear_supported(zldpll->dev))
+		__set_bit(DPLL_RESET_TYPE_HOLDOVER, types);
 
 	return 0;
 }
