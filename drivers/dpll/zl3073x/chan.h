@@ -45,6 +45,7 @@ int zl3073x_chan_state_set(struct zl3073x_dev *zldev, u8 index,
 
 int zl3073x_chan_state_update(struct zl3073x_dev *zldev, u8 index);
 int zl3073x_chan_nco_mode_set(struct zl3073x_dev *zldev, u8 index);
+int zl3073x_chan_holdover_reset(struct zl3073x_dev *zldev, u8 index);
 
 int zl3073x_chan_tod_ready_wait(struct zl3073x_dev *zldev, u8 ch);
 int zl3073x_chan_tod_read(struct zl3073x_dev *zldev, u8 ch,
