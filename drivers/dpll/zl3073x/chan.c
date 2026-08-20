@@ -211,6 +211,12 @@ int zl3073x_chan_state_fetch(struct zl3073x_dev *zldev, u8 index)
 	if (rc)
 		return rc;
 
+	/* Read fast lock control register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_DPLL_FAST_LOCK_CTRL,
+			     &chan->fast_lock_ctrl);
+	if (rc)
+		return rc;
+
 	/* Read reference priority registers */
 	for (i = 0; i < ARRAY_SIZE(chan->ref_prio); i++) {
 		rc = zl3073x_read_u8(zldev, ZL_REG_DPLL_REF_PRIO(i),
@@ -591,11 +597,9 @@ int zl3073x_chan_state_set(struct zl3073x_dev *zldev, u8 index,
 		dchan->mode_refsel = chan->mode_refsel;
 	}
 
-	/* Mailbox write for ref_prio if changed */
-	if (!memcmp(dchan->ref_prio, chan->ref_prio, sizeof(chan->ref_prio))) {
-		dchan->cfg = chan->cfg;
+	/* Skip mailbox write if no mailbox registers changed */
+	if (!memcmp(&dchan->cfg, &chan->cfg, sizeof(chan->cfg)))
 		return 0;
-	}
 
 	guard(mutex)(&zldev->multiop_lock);
 
@@ -604,6 +608,13 @@ int zl3073x_chan_state_set(struct zl3073x_dev *zldev, u8 index,
 			   ZL_REG_DPLL_MB_MASK, BIT(index));
 	if (rc)
 		return rc;
+
+	if (dchan->fast_lock_ctrl != chan->fast_lock_ctrl) {
+		rc = zl3073x_write_u8(zldev, ZL_REG_DPLL_FAST_LOCK_CTRL,
+				      chan->fast_lock_ctrl);
+		if (rc)
+			return rc;
+	}
 
 	/* Update changed ref_prio registers */
 	for (i = 0; i < ARRAY_SIZE(chan->ref_prio); i++) {
@@ -626,4 +637,28 @@ int zl3073x_chan_state_set(struct zl3073x_dev *zldev, u8 index,
 	dchan->cfg = chan->cfg;
 
 	return 0;
+}
+
+/**
+ * zl3073x_chan_holdover_reset - clear holdover history for a DPLL channel
+ * @zldev: pointer to zl3073x_dev structure
+ * @index: DPLL channel index
+ *
+ * Clears the holdover filter, holdover storage and ho_ready status
+ * by setting the self-clearing clear_ho bit in the dpll_cmd register.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_chan_holdover_reset(struct zl3073x_dev *zldev, u8 index)
+{
+	int rc;
+
+	rc = zl3073x_write_u8(zldev, ZL_REG_DPLL_CMD(index),
+			      ZL_DPLL_CMD_CLEAR_HO);
+	if (rc)
+		return rc;
+
+	return zl3073x_poll_zero_u8(zldev, ZL_REG_DPLL_CMD(index),
+				    ZL_DPLL_CMD_CLEAR_HO,
+				    ZL_POLL_HO_CLEAR_TIMEOUT_US);
 }

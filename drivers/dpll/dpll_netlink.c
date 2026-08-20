@@ -1977,6 +1977,34 @@ int dpll_nl_device_set_doit(struct sk_buff *skb, struct genl_info *info)
 	return dpll_set_from_nlattr(dpll, info);
 }
 
+int dpll_nl_device_reset_doit(struct sk_buff *skb, struct genl_info *info)
+{
+	const struct dpll_device_ops *ops;
+	struct dpll_device *dpll;
+	enum dpll_reset_type type;
+	struct nlattr *a;
+	int ret;
+
+	dpll = info->user_ptr[0];
+	if (GENL_REQ_ATTR_CHECK(info, DPLL_A_RESET_TYPE))
+		return -EINVAL;
+
+	a = info->attrs[DPLL_A_RESET_TYPE];
+	type = nla_get_u32(a);
+	ops = dpll_device_ops(dpll);
+	if (!ops->reset) {
+		NL_SET_ERR_MSG_ATTR(info->extack, a,
+				    "dpll device does not support reset");
+		return -EOPNOTSUPP;
+	}
+
+	ret = ops->reset(dpll, dpll_priv(dpll), type, info->extack);
+	if (!ret)
+		__dpll_device_change_ntf(dpll);
+
+	return ret;
+}
+
 int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 {
 	struct dpll_dump_ctx *ctx = dpll_dump_context(cb);

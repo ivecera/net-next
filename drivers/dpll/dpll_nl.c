@@ -88,6 +88,12 @@ static const struct nla_policy dpll_pin_set_nl_policy[DPLL_A_PIN_REFERENCE_SYNC 
 	[DPLL_A_PIN_REFERENCE_SYNC] = NLA_POLICY_NESTED(dpll_reference_sync_nl_policy),
 };
 
+/* DPLL_CMD_DEVICE_RESET - do */
+static const struct nla_policy dpll_device_reset_nl_policy[DPLL_A_RESET_TYPE + 1] = {
+	[DPLL_A_ID] = { .type = NLA_U32, },
+	[DPLL_A_RESET_TYPE] = NLA_POLICY_RANGE(NLA_U32, 1, 2),
+};
+
 /* Ops table for dpll */
 static const struct genl_split_ops dpll_nl_ops[] = {
 	{
@@ -154,6 +160,15 @@ static const struct genl_split_ops dpll_nl_ops[] = {
 		.post_doit	= dpll_pin_post_doit,
 		.policy		= dpll_pin_set_nl_policy,
 		.maxattr	= DPLL_A_PIN_REFERENCE_SYNC,
+		.flags		= GENL_ADMIN_PERM | GENL_CMD_CAP_DO,
+	},
+	{
+		.cmd		= DPLL_CMD_DEVICE_RESET,
+		.pre_doit	= dpll_pre_doit,
+		.doit		= dpll_nl_device_reset_doit,
+		.post_doit	= dpll_post_doit,
+		.policy		= dpll_device_reset_nl_policy,
+		.maxattr	= DPLL_A_RESET_TYPE,
 		.flags		= GENL_ADMIN_PERM | GENL_CMD_CAP_DO,
 	},
 };
