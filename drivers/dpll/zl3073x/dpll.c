@@ -17,6 +17,7 @@
 #include <linux/ptp_clock_kernel.h>
 #include <linux/slab.h>
 #include <linux/sprintf.h>
+#include <linux/time64.h>
 
 #include "core.h"
 #include "dpll.h"
@@ -127,6 +128,30 @@ zl3073x_dpll_pin_get_by_ref(struct zl3073x_dpll *zldpll, u8 ref_id)
 		if (zl3073x_dpll_is_input_pin(pin) &&
 		    zl3073x_input_pin_ref_get(pin->id) == ref_id)
 			return pin;
+	}
+
+	return NULL;
+}
+
+/**
+ * zl3073x_dpll_output_pin_sibling_get - get the other pin of an output pair
+ * @pin: output pin whose sibling is sought
+ *
+ * Output pin ids are allocated in P/N pairs (P even, N odd) that share a
+ * single HW output. Looks up the other pin of the pair, if it is
+ * registered as a dpll_pin on this DPLL.
+ *
+ * Return: pointer to sibling pin, or NULL if it is not registered
+ */
+static struct zl3073x_dpll_pin *
+zl3073x_dpll_output_pin_sibling_get(struct zl3073x_dpll_pin *pin)
+{
+	struct zl3073x_dpll_pin *sibling;
+
+	list_for_each_entry(sibling, &pin->dpll->pins, list) {
+		if (!zl3073x_dpll_is_input_pin(sibling) &&
+		    sibling->id == (pin->id ^ 1))
+			return sibling;
 	}
 
 	return NULL;
@@ -910,11 +935,13 @@ zl3073x_dpll_output_pin_esync_set(const struct dpll_pin *dpll_pin,
 	struct zl3073x_dev *zldev = zldpll->dev;
 	struct zl3073x_dpll_pin *pin = pin_priv;
 	const struct zl3073x_synth *synth;
+	struct zl3073x_dpll_pin *sibling;
 	struct zl3073x_out out;
 	u32 synth_freq;
 	u8 out_id;
+	int rc;
 
-	guard(mutex)(&zldpll->lock);
+	mutex_lock(&zldpll->lock);
 
 	out_id = zl3073x_output_pin_out_get(pin->id);
 	out = *zl3073x_out_state_get(zldev, out_id);
@@ -923,8 +950,10 @@ zl3073x_dpll_output_pin_esync_set(const struct dpll_pin *dpll_pin,
 	 * for N-division is also used for the esync divider so both cannot
 	 * be used.
 	 */
-	if (zl3073x_out_is_ndiv(&out))
-		return -EOPNOTSUPP;
+	if (zl3073x_out_is_ndiv(&out)) {
+		rc = -EOPNOTSUPP;
+		goto unlock;
+	}
 
 	/* Update clock type in output mode */
 	if (freq)
@@ -934,27 +963,44 @@ zl3073x_dpll_output_pin_esync_set(const struct dpll_pin *dpll_pin,
 		zl3073x_out_clock_type_set(&out,
 					   ZL_OUTPUT_MODE_CLOCK_TYPE_NORMAL);
 
-	/* If esync is being disabled just write mailbox and finish */
-	if (!freq)
-		return zl3073x_out_state_set(zldev, out_id, &out);
+	if (freq) {
+		/* Get attached synth frequency */
+		synth = zl3073x_synth_state_get(zldev,
+						zl3073x_out_synth_get(&out));
+		synth_freq = zl3073x_synth_freq_get(synth);
 
-	/* Get attached synth frequency */
-	synth = zl3073x_synth_state_get(zldev, zl3073x_out_synth_get(&out));
-	synth_freq = zl3073x_synth_freq_get(synth);
+		/* Compute and update esync period */
+		out.esync_n_period = synth_freq / (u32)freq / out.div;
 
-	/* Compute and update esync period */
-	out.esync_n_period = synth_freq / (u32)freq / out.div;
-
-	/* Half of the period in units of 1/2 synth cycle can be represented by
-	 * the output_div. To get the supported esync pulse width of 25% of the
-	 * period the output_div can just be divided by 2. Note that this
-	 * assumes that output_div is even, otherwise some resolution will be
-	 * lost.
-	 */
-	out.esync_n_width = out.div / 2;
+		/* Half of the period in units of 1/2 synth cycle can be
+		 * represented by the output_div. To get the supported esync
+		 * pulse width of 25% of the period the output_div can just
+		 * be divided by 2. Note that this assumes that output_div
+		 * is even, otherwise some resolution will be lost.
+		 */
+		out.esync_n_width = out.div / 2;
+	}
 
 	/* Commit output configuration */
-	return zl3073x_out_state_set(zldev, out_id, &out);
+	rc = zl3073x_out_state_set(zldev, out_id, &out);
+	if (rc)
+		goto unlock;
+
+	/* The clock type, esync period and esync width are all shared by
+	 * both pins of the output pair, so the sibling pin's esync
+	 * configuration changes too and userspace has to be notified.
+	 */
+	sibling = zl3073x_dpll_output_pin_sibling_get(pin);
+
+	mutex_unlock(&zldpll->lock);
+
+	if (sibling)
+		__dpll_pin_change_ntf(sibling->dpll_pin);
+
+	return 0;
+unlock:
+	mutex_unlock(&zldpll->lock);
+	return rc;
 }
 
 static int
@@ -984,12 +1030,14 @@ zl3073x_dpll_output_pin_frequency_set(const struct dpll_pin *dpll_pin,
 	struct zl3073x_dpll *zldpll = dpll_priv;
 	struct zl3073x_dev *zldev = zldpll->dev;
 	struct zl3073x_dpll_pin *pin = pin_priv;
+	struct zl3073x_dpll_pin *sibling = NULL;
 	const struct zl3073x_synth *synth;
 	u32 new_div, synth_freq;
 	struct zl3073x_out out;
 	u8 out_id;
+	int rc;
 
-	guard(mutex)(&zldpll->lock);
+	mutex_lock(&zldpll->lock);
 
 	out_id = zl3073x_output_pin_out_get(pin->id);
 	out = *zl3073x_out_state_get(zldev, out_id);
@@ -1002,7 +1050,8 @@ zl3073x_dpll_output_pin_frequency_set(const struct dpll_pin *dpll_pin,
 	/* Check signal format */
 	if (!zl3073x_out_is_ndiv(&out)) {
 		/* For non N-divided signal formats the frequency is computed
-		 * as division of synth frequency and output divisor.
+		 * as division of synth frequency and output divisor, which
+		 * is shared by both pins of the output pair.
 		 */
 		out.div = new_div;
 
@@ -1010,7 +1059,16 @@ zl3073x_dpll_output_pin_frequency_set(const struct dpll_pin *dpll_pin,
 		out.width = new_div;
 
 		/* Commit output configuration */
-		return zl3073x_out_state_set(zldev, out_id, &out);
+		rc = zl3073x_out_state_set(zldev, out_id, &out);
+		if (rc)
+			goto unlock;
+
+		/* The other pin's frequency changed too - it has to be
+		 * notified about the change.
+		 */
+		sibling = zl3073x_dpll_output_pin_sibling_get(pin);
+
+		goto unlock;
 	}
 
 	if (zl3073x_dpll_is_p_pin(pin)) {
@@ -1022,8 +1080,10 @@ zl3073x_dpll_output_pin_frequency_set(const struct dpll_pin *dpll_pin,
 		 * Update divisor for N-pin to keep N-pin frequency.
 		 */
 		out.esync_n_period = (out.esync_n_period * out.div) / new_div;
-		if (!out.esync_n_period)
-			return -EINVAL;
+		if (!out.esync_n_period) {
+			rc = -EINVAL;
+			goto unlock;
+		}
 
 		/* Update the output divisor */
 		out.div = new_div;
@@ -1039,15 +1099,24 @@ zl3073x_dpll_output_pin_frequency_set(const struct dpll_pin *dpll_pin,
 		 * Update divisor for N-pin
 		 */
 		out.esync_n_period = div64_u64(synth_freq, frequency * out.div);
-		if (!out.esync_n_period)
-			return -EINVAL;
+		if (!out.esync_n_period) {
+			rc = -EINVAL;
+			goto unlock;
+		}
 	}
 
 	/* For 50/50 duty cycle the divisor is equal to width */
 	out.esync_n_width = out.esync_n_period;
 
 	/* Commit output configuration */
-	return zl3073x_out_state_set(zldev, out_id, &out);
+	rc = zl3073x_out_state_set(zldev, out_id, &out);
+unlock:
+	mutex_unlock(&zldpll->lock);
+
+	if (sibling)
+		__dpll_pin_change_ntf(sibling->dpll_pin);
+
+	return rc;
 }
 
 static int
@@ -1086,10 +1155,12 @@ zl3073x_dpll_output_pin_phase_adjust_set(const struct dpll_pin *dpll_pin,
 	struct zl3073x_dpll *zldpll = dpll_priv;
 	struct zl3073x_dev *zldev = zldpll->dev;
 	struct zl3073x_dpll_pin *pin = pin_priv;
+	struct zl3073x_dpll_pin *sibling;
 	struct zl3073x_out out;
 	u8 out_id;
+	int rc;
 
-	guard(mutex)(&zldpll->lock);
+	mutex_lock(&zldpll->lock);
 
 	out_id = zl3073x_output_pin_out_get(pin->id);
 	out = *zl3073x_out_state_get(zldev, out_id);
@@ -1098,7 +1169,23 @@ zl3073x_dpll_output_pin_phase_adjust_set(const struct dpll_pin *dpll_pin,
 	out.phase_comp = phase_adjust / pin->phase_gran;
 
 	/* Update output configuration from mailbox */
-	return zl3073x_out_state_set(zldev, out_id, &out);
+	rc = zl3073x_out_state_set(zldev, out_id, &out);
+	if (rc) {
+		mutex_unlock(&zldpll->lock);
+		return rc;
+	}
+
+	/* The phase compensation register is shared by both pins of the
+	 * output pair, so the sibling pin's phase adjustment changes too.
+	 */
+	sibling = zl3073x_dpll_output_pin_sibling_get(pin);
+
+	mutex_unlock(&zldpll->lock);
+
+	if (sibling)
+		__dpll_pin_change_ntf(sibling->dpll_pin);
+
+	return 0;
 }
 
 static int
@@ -1109,10 +1196,72 @@ zl3073x_dpll_output_pin_state_on_dpll_get(const struct dpll_pin *dpll_pin,
 					  enum dpll_pin_state *state,
 					  struct netlink_ext_ack *extack)
 {
-	/* If the output pin is registered then it is always connected */
-	*state = DPLL_PIN_STATE_CONNECTED;
+	struct zl3073x_dpll *zldpll = dpll_priv;
+	struct zl3073x_dev *zldev = zldpll->dev;
+	struct zl3073x_dpll_pin *pin = pin_priv;
+
+	guard(mutex)(&zldpll->lock);
+
+	if (zl3073x_dev_output_pin_state_get(zldev, pin->id))
+		*state = DPLL_PIN_STATE_CONNECTED;
+	else
+		*state = DPLL_PIN_STATE_DISCONNECTED;
 
 	return 0;
+}
+
+/**
+ * zl3073x_dpll_output_pin_state_on_dpll_set - enable or disable an output pin
+ * @dpll_pin: registered dpll_pin
+ * @pin_priv: pointer to zl3073x_dpll_pin structure
+ * @dpll: registered dpll_device
+ * @dpll_priv: pointer to zl3073x_dpll structure
+ * @state: requested pin state
+ * @extack: netlink extack pointer
+ *
+ * Differential output pins are enabled/disabled through the clean
+ * output_ctrl_x::stop condition, since they expose only a single
+ * logical pin.
+ *
+ * CMOS output pins are enabled/disabled by muting/unmuting the pin's
+ * driver via a GPO override rather than by changing the output's
+ * signal_format, since a signal_format change is not glitch-free on
+ * this hardware. The GPO toggle itself is not glitch-free either, so
+ * it is bracketed by a clean stop/restart of the whole output.
+ *
+ * Return: 0 on success, <0 on error
+ */
+static int
+zl3073x_dpll_output_pin_state_on_dpll_set(const struct dpll_pin *dpll_pin,
+					  void *pin_priv,
+					  const struct dpll_device *dpll,
+					  void *dpll_priv,
+					  enum dpll_pin_state state,
+					  struct netlink_ext_ack *extack)
+{
+	struct zl3073x_dpll *zldpll = dpll_priv;
+	struct zl3073x_dev *zldev = zldpll->dev;
+	struct zl3073x_dpll_pin *pin = pin_priv;
+	bool enable;
+	int rc = 0;
+
+	if (state != DPLL_PIN_STATE_CONNECTED &&
+	    state != DPLL_PIN_STATE_DISCONNECTED) {
+		NL_SET_ERR_MSG(extack, "Invalid pin state for output pin");
+		return -EINVAL;
+	}
+
+	guard(mutex)(&zldpll->lock);
+
+	enable = state == DPLL_PIN_STATE_CONNECTED;
+	if (zl3073x_dev_output_pin_state_get(zldev, pin->id) != enable) {
+		rc = zl3073x_dev_output_pin_state_set(zldev, pin->id, enable);
+		if (rc)
+			NL_SET_ERR_MSG(extack,
+				       "Failed to change output pin state");
+	}
+
+	return rc;
 }
 
 static int
@@ -1599,6 +1748,7 @@ static const struct dpll_pin_ops zl3073x_dpll_output_pin_ops = {
 	.phase_adjust_get = zl3073x_dpll_output_pin_phase_adjust_get,
 	.phase_adjust_set = zl3073x_dpll_output_pin_phase_adjust_set,
 	.state_on_dpll_get = zl3073x_dpll_output_pin_state_on_dpll_get,
+	.state_on_dpll_set = zl3073x_dpll_output_pin_state_on_dpll_set,
 };
 
 static const struct dpll_pin_ops zl3073x_dpll_nco_pin_ops = {
