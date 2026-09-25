@@ -497,12 +497,128 @@ int zl3073x_write_hwreg_seq(struct zl3073x_dev *zldev,
 						  seq[i].value, seq[i].mask);
 		if (rc)
 			return rc;
-
-		if (seq->wait)
-			msleep(seq->wait);
 	}
 
 	return rc;
+}
+
+/**
+ * zl3073x_dev_hw_stop - Halt the device CPU
+ * @zldev: zl3073x device pointer
+ *
+ * Halts the device CPU through a HW register write sequence so the device
+ * memory can be safely accessed. The device firmware is not running after
+ * this call returns.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_dev_hw_stop(struct zl3073x_dev *zldev)
+{
+	static const struct zl3073x_hwreg_seq_item hw_seq[] = {
+		HWREG_SEQ_ITEM(0x80000400, 1, BIT(0)),
+		HWREG_SEQ_ITEM(0x10000000, 1, BIT(2)),
+		HWREG_SEQ_ITEM(0x10000020, 1, BIT(0)),
+	};
+	int rc;
+
+	/* Halt the device CPU */
+	rc = zl3073x_write_hwreg_seq(zldev, hw_seq, ARRAY_SIZE(hw_seq));
+	if (rc) {
+		dev_err(zldev->dev, "Failed to stop HW\n");
+		return rc;
+	}
+
+	msleep(400);
+
+	return rc;
+}
+
+/**
+ * zl3073x_dev_hw_start - Start the device CPU from the given address
+ * @zldev: zl3073x device pointer
+ * @hw_addr: address to start the device CPU execution from
+ *
+ * Starts the device CPU through a HW register write sequence with the program
+ * counter set to @hw_addr. Used to boot either the flash utility or the normal
+ * firmware.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_dev_hw_start(struct zl3073x_dev *zldev, u32 hw_addr)
+{
+	struct zl3073x_hwreg_seq_item hw_seq[] = {
+		HWREG_SEQ_ITEM(0x10400004, 0x000000C0, U32_MAX),
+		HWREG_SEQ_ITEM(0x10400008, 0x00000000, U32_MAX),
+		HWREG_SEQ_ITEM(0x10400010, hw_addr, U32_MAX),
+		HWREG_SEQ_ITEM(0x10400014, hw_addr + 4, U32_MAX),
+		HWREG_SEQ_ITEM(0x10000000, 1, BIT(9)),
+		HWREG_SEQ_ITEM(0x10000020, 0, BIT(0)),
+		HWREG_SEQ_ITEM(0x80000400, 0, BIT(0)),
+	};
+	int rc;
+
+	rc = zl3073x_write_hwreg_seq(zldev, hw_seq, ARRAY_SIZE(hw_seq));
+	if (rc) {
+		dev_err(zldev->dev, "Failed to start HW\n");
+		return rc;
+	}
+
+	msleep(400);
+
+	return rc;
+}
+
+/**
+ * zl3073x_dev_hw_reset - Reset the device CPU and reload firmware and config
+ * @zldev: zl3073x device pointer
+ *
+ * Triggers a core reset that reboots the firmware and reloads the whole
+ * configuration from flash. The device is inaccessible on the control bus
+ * while the reset is in progress.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_dev_hw_reset(struct zl3073x_dev *zldev)
+{
+	u8 reset_status;
+	int rc;
+
+	/* Read reset status register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
+	if (rc)
+		return rc;
+
+	/* Arm the reset detection flag */
+	reset_status |= ZL_REG_RESET_STATUS_RESET;
+	rc = zl3073x_write_u8(zldev, ZL_REG_RESET_STATUS, reset_status);
+	if (rc)
+		return rc;
+
+	/* Stop the device CPU */
+	rc = zl3073x_dev_hw_stop(zldev);
+	if (rc)
+		return rc;
+
+	/* Restart the device CPU from bootloader */
+	rc = zl3073x_dev_hw_start(zldev, 0x00000000);
+	if (rc) {
+		dev_err(zldev->dev,
+			"Device CPU left halted, system restart required\n");
+		return rc;
+	}
+
+	/* Read again the reset status register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
+	if (rc)
+		return rc;
+
+	/* Check the reset flag was cleared by the firmware */
+	if (reset_status & ZL_REG_RESET_STATUS_RESET) {
+		dev_err(zldev->dev, "Device reset not confirmed\n");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int
