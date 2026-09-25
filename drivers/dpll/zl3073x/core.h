@@ -125,21 +125,18 @@ int zl3073x_dev_phase_avg_factor_set(struct zl3073x_dev *zldev, u8 factor);
  * @addr: HW register to be written
  * @value: value to be written to HW register
  * @mask: bitmask indicating bits to be updated
- * @wait: number of ms to wait after register write
  */
 struct zl3073x_hwreg_seq_item {
 	u32	addr;
 	u32	value;
 	u32	mask;
-	u32	wait;
 };
 
-#define HWREG_SEQ_ITEM(_addr, _value, _mask, _wait)	\
+#define HWREG_SEQ_ITEM(_addr, _value, _mask)		\
 {							\
 	.addr	= _addr,				\
 	.value	= FIELD_PREP_CONST(_mask, _value),	\
 	.mask	= _mask,				\
-	.wait	= _wait,				\
 }
 
 int zl3073x_mb_op(struct zl3073x_dev *zldev, unsigned int op_reg, u8 op_val,
@@ -161,6 +158,7 @@ int zl3073x_update_hwreg(struct zl3073x_dev *zldev, u32 addr, u32 value,
 int zl3073x_write_hwreg_seq(struct zl3073x_dev *zldev,
 			    const struct zl3073x_hwreg_seq_item *seq,
 			    size_t num_items);
+int zl3073x_dev_hw_reset(struct zl3073x_dev *zldev);
 
 /*****************
  * Misc operations
