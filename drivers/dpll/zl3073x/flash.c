@@ -529,22 +529,22 @@ int zl3073x_flash_mode_enter(struct zl3073x_dev *zldev, const void *util_ptr,
 {
 	/* Sequence to be written prior utility download */
 	static const struct zl3073x_hwreg_seq_item pre_seq[] = {
-		HWREG_SEQ_ITEM(0x80000400, 1, BIT(0), 0),
-		HWREG_SEQ_ITEM(0x80206340, 1, BIT(4), 0),
-		HWREG_SEQ_ITEM(0x10000000, 1, BIT(2), 0),
-		HWREG_SEQ_ITEM(0x10000024, 0x00000001, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10000020, 0x00000001, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10000000, 1, BIT(10), 1000),
+		HWREG_SEQ_ITEM(0x80000400, 1, BIT(0)),
+		HWREG_SEQ_ITEM(0x80206340, 1, BIT(4)),
+		HWREG_SEQ_ITEM(0x10000000, 1, BIT(2)),
+		HWREG_SEQ_ITEM(0x10000024, 0x00000001, U32_MAX),
+		HWREG_SEQ_ITEM(0x10000020, 0x00000001, U32_MAX),
+		HWREG_SEQ_ITEM(0x10000000, 1, BIT(10)),
 	};
 	/* Sequence to be written after utility download */
 	static const struct zl3073x_hwreg_seq_item post_seq[] = {
-		HWREG_SEQ_ITEM(0x10400004, 0x000000C0, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10400008, 0x00000000, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10400010, 0x20000000, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10400014, 0x20000004, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10000000, 1, GENMASK(10, 9), 0),
-		HWREG_SEQ_ITEM(0x10000020, 0x00000000, U32_MAX, 0),
-		HWREG_SEQ_ITEM(0x10000000, 0, BIT(0), 1000),
+		HWREG_SEQ_ITEM(0x10400004, 0x000000C0, U32_MAX),
+		HWREG_SEQ_ITEM(0x10400008, 0x00000000, U32_MAX),
+		HWREG_SEQ_ITEM(0x10400010, 0x20000000, U32_MAX),
+		HWREG_SEQ_ITEM(0x10400014, 0x20000004, U32_MAX),
+		HWREG_SEQ_ITEM(0x10000000, 1, GENMASK(10, 9)),
+		HWREG_SEQ_ITEM(0x10000020, 0x00000000, U32_MAX),
+		HWREG_SEQ_ITEM(0x10000000, 0, BIT(0)),
 	};
 	int rc;
 
@@ -557,6 +557,7 @@ int zl3073x_flash_mode_enter(struct zl3073x_dev *zldev, const void *util_ptr,
 		ZL_FLASH_ERR_MSG(extack, "cannot execute pre-load sequence");
 		goto error;
 	}
+	msleep(500);
 
 	/* Download utility image to device memory */
 	rc = zl3073x_flash_download(zldev, "utility", 0x20000000, util_ptr,
@@ -572,6 +573,7 @@ int zl3073x_flash_mode_enter(struct zl3073x_dev *zldev, const void *util_ptr,
 		ZL_FLASH_ERR_MSG(extack, "cannot execute post-load sequence");
 		goto error;
 	}
+	msleep(500);
 
 	/* Check that utility identifies itself correctly */
 	rc = zl3073x_flash_mode_verify(zldev);
@@ -617,49 +619,9 @@ error:
 int zl3073x_flash_mode_leave(struct zl3073x_dev *zldev,
 			     struct netlink_ext_ack *extack)
 {
-	/* Sequence to be written after flash */
-	static const struct zl3073x_hwreg_seq_item fw_reset_seq[] = {
-		HWREG_SEQ_ITEM(0x80000404, 1, BIT(0), 0),
-		HWREG_SEQ_ITEM(0x80000410, 1, BIT(0), 0),
-	};
-	u8 reset_status;
-	int rc;
-
 	zl3073x_devlink_flash_notify(zldev, "Leaving flash mode", "utility",
 				     0, 0);
 
-	/* Read reset status register */
-	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
-	if (rc)
-		return rc;
-
-	/* Set reset bit */
-	reset_status |= ZL_REG_RESET_STATUS_RESET;
-
-	/* Update reset status register */
-	rc = zl3073x_write_u8(zldev, ZL_REG_RESET_STATUS, reset_status);
-	if (rc)
-		return rc;
-
-	/* We do not check the return value here as the sequence resets
-	 * the device CPU and the last write always return an error.
-	 */
-	zl3073x_write_hwreg_seq(zldev, fw_reset_seq, ARRAY_SIZE(fw_reset_seq));
-
-	/* Wait for the device to be ready */
-	msleep(500);
-
-	/* Read again the reset status register */
-	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
-	if (rc)
-		return rc;
-
-	/* Check the reset bit was cleared */
-	if (reset_status & ZL_REG_RESET_STATUS_RESET) {
-		dev_err(zldev->dev,
-			"Reset not confirmed after switch to normal mode\n");
-		return -EINVAL;
-	}
-
-	return 0;
+	/* Reset the device CPU to resume normal firmware processing */
+	return zl3073x_dev_hw_reset(zldev);
 }

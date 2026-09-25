@@ -497,12 +497,61 @@ int zl3073x_write_hwreg_seq(struct zl3073x_dev *zldev,
 						  seq[i].value, seq[i].mask);
 		if (rc)
 			return rc;
-
-		if (seq->wait)
-			msleep(seq->wait);
 	}
 
 	return rc;
+}
+
+/**
+ * zl3073x_dev_hw_reset - Reset the device CPU and reload firmware and config
+ * @zldev: zl3073x device pointer
+ *
+ * Triggers a core reset that reboots the firmware and reloads the whole
+ * configuration from flash. The device is inaccessible on the control bus
+ * while the reset is in progress.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_dev_hw_reset(struct zl3073x_dev *zldev)
+{
+	static const struct zl3073x_hwreg_seq_item hw_seq[] = {
+		HWREG_SEQ_ITEM(0x80000404, 1, BIT(0)),
+		HWREG_SEQ_ITEM(0x80000410, 1, BIT(0)),
+	};
+	u8 reset_status;
+	int rc;
+
+	/* Read reset status register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
+	if (rc)
+		return rc;
+
+	/* Arm the reset detection flag */
+	reset_status |= ZL_REG_RESET_STATUS_RESET;
+	rc = zl3073x_write_u8(zldev, ZL_REG_RESET_STATUS, reset_status);
+	if (rc)
+		return rc;
+
+	/* Trigger the core reset. The last write typically errors out as
+	 * the device CPU resets mid-transaction, so its return value is
+	 * not checked.
+	 */
+	zl3073x_write_hwreg_seq(zldev, hw_seq, ARRAY_SIZE(hw_seq));
+
+	msleep(500);
+
+	/* Read again the reset status register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
+	if (rc)
+		return rc;
+
+	/* Check the reset flag was cleared by the firmware */
+	if (reset_status & ZL_REG_RESET_STATUS_RESET) {
+		dev_err(zldev->dev, "Device reset not confirmed\n");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int
