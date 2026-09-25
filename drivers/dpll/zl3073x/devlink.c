@@ -89,28 +89,25 @@ zl3073x_devlink_reload_down(struct devlink *devlink, bool netns_change,
 {
 	struct zl3073x_dev *zldev = devlink_priv(devlink);
 
-	if (action != DEVLINK_RELOAD_ACTION_DRIVER_REINIT)
+	switch (action) {
+	case DEVLINK_RELOAD_ACTION_DRIVER_REINIT:
+	case DEVLINK_RELOAD_ACTION_FW_ACTIVATE:
+		/* Stop normal operation */
+		zl3073x_dev_stop(zldev);
+
+		return 0;
+
+	default:
 		return -EOPNOTSUPP;
-
-	/* Stop normal operation */
-	zl3073x_dev_stop(zldev);
-
-	return 0;
+	}
 }
 
 static int
-zl3073x_devlink_reload_up(struct devlink *devlink,
-			  enum devlink_reload_action action,
-			  enum devlink_reload_limit limit,
-			  u32 *actions_performed,
-			  struct netlink_ext_ack *extack)
+zl3073x_devlink_clock_id_update(struct zl3073x_dev *zldev)
 {
-	struct zl3073x_dev *zldev = devlink_priv(devlink);
+	struct devlink *devlink = priv_to_devlink(zldev);
 	union devlink_param_value val;
 	int rc;
-
-	if (action != DEVLINK_RELOAD_ACTION_DRIVER_REINIT)
-		return -EOPNOTSUPP;
 
 	rc = devl_param_driverinit_value_get(devlink,
 					     DEVLINK_PARAM_GENERIC_ID_CLOCK_ID,
@@ -124,14 +121,55 @@ zl3073x_devlink_reload_up(struct devlink *devlink,
 		zldev->clock_id = val.vu64;
 	}
 
+	return rc;
+}
+
+static int
+zl3073x_devlink_reload_up(struct devlink *devlink,
+			  enum devlink_reload_action action,
+			  enum devlink_reload_limit limit,
+			  u32 *actions_performed,
+			  struct netlink_ext_ack *extack)
+{
+	struct zl3073x_dev *zldev = devlink_priv(devlink);
+	int rc, restart_rc;
+	bool full;
+
+	*actions_performed = 0;
+	switch (action) {
+	case DEVLINK_RELOAD_ACTION_DRIVER_REINIT:
+		full = false;
+		rc = zl3073x_devlink_clock_id_update(zldev);
+		if (rc)
+			NL_SET_ERR_MSG_MOD(extack, "Failed to update clock_id");
+		break;
+	case DEVLINK_RELOAD_ACTION_FW_ACTIVATE:
+		full = true;
+		/* Reset the device CPU to reboot the firmware and reload the
+		 * configuration from flash. Errors are logged by
+		 * zl3073x_dev_hw_reset() itself; normal operation is still
+		 * restarted below on a best-effort basis.
+		 */
+		rc = zl3073x_dev_hw_reset(zldev);
+		if (rc) {
+			NL_SET_ERR_MSG_MOD(extack, "Hardware reset failed");
+			break;
+		}
+		*actions_performed |= BIT(DEVLINK_RELOAD_ACTION_FW_ACTIVATE);
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
 	/* Restart normal operation */
-	rc = zl3073x_dev_start(zldev, false);
-	if (rc)
-		dev_warn(zldev->dev, "Failed to re-start normal operation\n");
+	restart_rc = zl3073x_dev_start(zldev, full);
+	if (restart_rc)
+		NL_SET_ERR_MSG_WEAK_MOD(extack,
+					"Failed to re-start normal operation");
+	else
+		*actions_performed |= BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT);
 
-	*actions_performed = BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT);
-
-	return 0;
+	return rc ? : restart_rc;
 }
 
 void zl3073x_devlink_flash_notify(struct zl3073x_dev *zldev, const char *msg,
@@ -270,7 +308,8 @@ finish:
 
 static const struct devlink_ops zl3073x_devlink_ops = {
 	.info_get = zl3073x_devlink_info_get,
-	.reload_actions = BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT),
+	.reload_actions = BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT) |
+			  BIT(DEVLINK_RELOAD_ACTION_FW_ACTIVATE),
 	.reload_down = zl3073x_devlink_reload_down,
 	.reload_up = zl3073x_devlink_reload_up,
 	.flash_update = zl3073x_devlink_flash_update,
