@@ -24,6 +24,7 @@ DEFINE_MUTEX(dpll_lock);
 
 DEFINE_XARRAY_FLAGS(dpll_device_xa, XA_FLAGS_ALLOC);
 DEFINE_XARRAY_FLAGS(dpll_pin_xa, XA_FLAGS_ALLOC);
+static DEFINE_XARRAY_FLAGS(dpll_domain_xa, XA_FLAGS_ALLOC);
 
 static RAW_NOTIFIER_HEAD(dpll_notifier_chain);
 static DEFINE_IDA(dpll_pin_idx_ida);
@@ -88,6 +89,48 @@ void dpll_pin_notify(struct dpll_pin *pin, u64 src_clock_id,
 	call_dpll_notifiers(action, &info);
 }
 
+static struct dpll_domain *dpll_domain_get(u64 clock_id, struct module *module)
+{
+	struct dpll_domain *domain;
+	unsigned long i;
+
+	lockdep_assert_held(&dpll_lock);
+
+	xa_for_each(&dpll_domain_xa, i, domain) {
+		if (domain->clock_id == clock_id && domain->module == module) {
+			refcount_inc(&domain->refcount);
+			return domain;
+		}
+	}
+
+	domain = kzalloc_obj(*domain);
+	if (!domain)
+		return NULL;
+	domain->clock_id = clock_id;
+	domain->module = module;
+	refcount_set(&domain->refcount, 1);
+	mutex_init(&domain->lock);
+	if (xa_alloc(&dpll_domain_xa, &domain->id, domain, xa_limit_32b,
+		     GFP_KERNEL)) {
+		mutex_destroy(&domain->lock);
+		kfree(domain);
+		return NULL;
+	}
+
+	return domain;
+}
+
+static void dpll_domain_put(struct dpll_domain *domain)
+{
+	lockdep_assert_held(&dpll_lock);
+
+	if (refcount_dec_and_test(&domain->refcount)) {
+		xa_erase(&dpll_domain_xa, domain->id);
+		mutex_destroy(&domain->lock);
+		kfree(domain);
+	}
+}
+
 static void dpll_device_tracker_alloc(struct dpll_device *dpll,
 				      dpll_tracker *tracker)
 {
@@ -120,6 +163,7 @@ static void __dpll_device_put(struct dpll_device *dpll, dpll_tracker *tracker)
 		xa_erase(&dpll_device_xa, dpll->id);
 		WARN_ON(!list_empty(&dpll->registration_list));
 		ref_tracker_dir_exit(&dpll->refcnt_tracker);
+		dpll_domain_put(dpll->domain);
 		kfree(dpll);
 	}
 }
@@ -159,6 +203,7 @@ static void __dpll_pin_put(struct dpll_pin *pin, dpll_tracker *tracker)
 		fwnode_handle_put(pin->fwnode);
 		dpll_pin_idx_free(pin->pin_idx);
 		ref_tracker_dir_exit(&pin->refcnt_tracker);
+		dpll_domain_put(pin->domain);
 		kfree_rcu(pin, rcu);
 	}
 }
@@ -366,6 +411,11 @@ dpll_device_alloc(const u64 clock_id, u32 device_idx, struct module *module)
 	dpll = kzalloc_obj(*dpll);
 	if (!dpll)
 		return ERR_PTR(-ENOMEM);
+	dpll->domain = dpll_domain_get(clock_id, module);
+	if (!dpll->domain) {
+		kfree(dpll);
+		return ERR_PTR(-ENOMEM);
+	}
 	refcount_set(&dpll->refcount, 1);
 	INIT_LIST_HEAD(&dpll->registration_list);
 	dpll->device_idx = device_idx;
@@ -374,6 +424,7 @@ dpll_device_alloc(const u64 clock_id, u32 device_idx, struct module *module)
 	ret = xa_alloc_cyclic(&dpll_device_xa, &dpll->id, dpll, xa_limit_32b,
 			      &dpll_device_xa_id, GFP_KERNEL);
 	if (ret < 0) {
+		dpll_domain_put(dpll->domain);
 		kfree(dpll);
 		return ERR_PTR(ret);
 	}
@@ -664,6 +715,11 @@ dpll_pin_alloc(u64 clock_id, u32 pin_idx, struct module *module,
 	ret = dpll_pin_prop_dup(prop, &pin->prop);
 	if (ret)
 		goto err_pin_prop;
+	pin->domain = dpll_domain_get(clock_id, module);
+	if (!pin->domain) {
+		ret = -ENOMEM;
+		goto err_domain;
+	}
 	refcount_set(&pin->refcount, 1);
 	xa_init_flags(&pin->dpll_refs, XA_FLAGS_ALLOC);
 	xa_init_flags(&pin->parent_refs, XA_FLAGS_ALLOC);
@@ -678,6 +734,8 @@ err_xa_alloc:
 	xa_destroy(&pin->dpll_refs);
 	xa_destroy(&pin->parent_refs);
 	xa_destroy(&pin->ref_sync_pins);
+	dpll_domain_put(pin->domain);
+err_domain:
 	dpll_pin_prop_free(&pin->prop);
 err_pin_prop:
 	kfree(pin);

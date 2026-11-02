@@ -9,6 +9,7 @@
 
 #include <linux/dpll.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/refcount.h>
 #include <linux/ref_tracker.h>
 #include "dpll_nl.h"
@@ -16,11 +17,31 @@
 #define DPLL_REGISTERED		XA_MARK_1
 
 /**
+ * struct dpll_domain - group of dpll objects sharing a lock
+ * @id:			index of the domain in dpll_domain_xa
+ * @clock_id:		clock_id of the objects in the domain
+ * @module:		module of the objects in the domain
+ * @refcount:		number of dpll devices and pins in the domain
+ * @lock:		lock of the domain
+ *
+ * All dpll devices and pins created with the same (module, clock_id) pair
+ * belong to one domain, in practice to one chip or card.
+ **/
+struct dpll_domain {
+	u32 id;
+	u64 clock_id;
+	struct module *module;
+	refcount_t refcount;
+	struct mutex lock;
+};
+
+/**
  * struct dpll_device - stores DPLL device internal data
  * @id:			unique id number for device given by dpll subsystem
  * @device_idx:		id given by dev driver
  * @clock_id:		unique identifier (clock_id) of a dpll
  * @module:		module of creator
+ * @domain:		domain the device belongs to
  * @type:		type of a dpll
  * @pin_refs:		stores pins registered within a dpll
  * @refcount:		refcount
@@ -32,6 +53,7 @@ struct dpll_device {
 	u32 device_idx;
 	u64 clock_id;
 	struct module *module;
+	struct dpll_domain *domain;
 	enum dpll_type type;
 	struct xarray pin_refs;
 	refcount_t refcount;
@@ -46,6 +68,7 @@ struct dpll_device {
  * @clock_id:		clock_id of creator
  * @module:		module of creator
  * @module_name:	module name of creator
+ * @domain:		domain the pin belongs to
  * @fwnode:		optional reference to firmware node
  * @dpll_refs:		hold referencees to dplls pin was registered with
  * @parent_refs:	hold references to parent pins pin was registered with
@@ -61,6 +84,7 @@ struct dpll_pin {
 	u64 clock_id;
 	struct module *module;
 	char module_name[MODULE_NAME_LEN];
+	struct dpll_domain *domain;
 	struct fwnode_handle *fwnode;
 	struct xarray dpll_refs;
 	struct xarray parent_refs;
