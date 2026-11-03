@@ -6,6 +6,7 @@
  *  Copyright (c) 2023 Intel and affiliates
  *
  */
+#include <kunit/visibility.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
@@ -1836,6 +1837,7 @@ int dpll_nl_pin_set_doit(struct sk_buff *skb, struct genl_info *info)
 
 	return dpll_pin_set_from_nlattr(pin, info);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_nl_pin_set_doit);
 
 static struct dpll_device *
 dpll_device_find(u64 clock_id, struct nlattr *mod_name_attr,
@@ -2010,6 +2012,7 @@ int dpll_nl_device_set_doit(struct sk_buff *skb, struct genl_info *info)
 
 	return dpll_set_from_nlattr(dpll, info);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_nl_device_set_doit);
 
 int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 {
@@ -2070,6 +2073,7 @@ unlock:
 	up_read(&dpll_lock);
 	return -ENODEV;
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_pre_doit);
 
 void dpll_post_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 		    struct genl_info *info)
@@ -2079,6 +2083,7 @@ void dpll_post_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 	mutex_unlock(&dpll->domain->lock);
 	up_read(&dpll_lock);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_post_doit);
 
 int
 dpll_lock_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
@@ -2122,6 +2127,7 @@ unlock_dev:
 	up_read(&dpll_lock);
 	return ret;
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_pin_pre_doit);
 
 void dpll_pin_post_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 			struct genl_info *info)
@@ -2131,3 +2137,4 @@ void dpll_pin_post_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 	mutex_unlock(&pin->domain->lock);
 	up_read(&dpll_lock);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_pin_post_doit);
