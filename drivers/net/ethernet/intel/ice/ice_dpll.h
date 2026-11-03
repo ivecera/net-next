@@ -165,6 +165,9 @@ struct ice_dpll {
  *     tx_refclks usage map), acquire pf->dplls.lock first, then
  *     ctrl_pf->dplls.lock. Skip the second acquire when pf == ctrl_pf
  *     to avoid recursive locking.
+ *   - Callbacks of the SYNCE and TIME_REF pins of an external DPLL run under
+ *     the DPLL core domain lock of that DPLL, not of the TXC and TSPLL DPLLs,
+ *     so only @lock serializes them with the callbacks of these DPLLs.
  *   - @txclk_notify_rwsem is held for read across
  *     ice_txclk_update_and_notify(), including the out-of-lock
  *     dpll_*_change_ntf() calls. ice_dpll_deinit() takes the write side
