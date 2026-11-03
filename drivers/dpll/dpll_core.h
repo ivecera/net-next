@@ -22,10 +22,14 @@
  * @clock_id:		clock_id of the objects in the domain
  * @module:		module of the objects in the domain
  * @refcount:		number of dpll devices and pins in the domain
- * @lock:		lock of the domain
+ * @lock:		serializes driver callbacks of the domain
  *
  * All dpll devices and pins created with the same (module, clock_id) pair
  * belong to one domain, in practice to one chip or card.
+ *
+ * Callbacks of a device run under the domain of the device and callbacks of a
+ * pin under the domain of the pin, whichever driver registered them. Only one
+ * domain lock is held at a time, so domains have no lock order.
  **/
 struct dpll_domain {
 	u32 id;
