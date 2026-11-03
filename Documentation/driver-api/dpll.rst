@@ -675,6 +675,50 @@ In the error path we have to rewind every allocation in the reverse order:
 
 More complex example can be found in Intel's ICE driver or nVidia's mlx5 driver.
 
+Locking
+=======
+
+The subsystem uses two levels of locks, always taken in this order:
+
+- ``dpll_lock`` protects the topology of dpll devices and pins and their
+  lifetime. Functions changing the topology, for example dpll_pin_register(),
+  take it for write and send the create and delete notifications under it.
+  Netlink requests, each part of a dump and change notifications take it for
+  read for their whole duration.
+- A domain lock serializes driver callbacks. All dpll devices and pins created
+  with the same module and ``clock_id`` belong to one domain, in practice to
+  one chip or card.
+
+A netlink request addressing a device or a pin holds the domain lock of that
+object from start to end. A notification holds it while its message is built and
+sent, so messages of one object are sent in the order they were built. Only one
+domain lock is held at a time, so domains have no lock order, and callbacks of
+different domains can run concurrently.
+
+Callbacks of a dpll device run under the domain of the device. Callbacks of a
+pin run under the domain of the pin, whichever driver registered them:
+
+- A driver registering a pin of another driver with its dpll device has these
+  callbacks serialized with the driver that created the pin, not with the other
+  callbacks of its device, so it has to protect the state they share by itself.
+  A callback stuck in such a registration stops the domain of the pin.
+- The parent pin of a pin registered with dpll_pin_on_pin_register() and its
+  dpll devices can belong to another driver, so the callback must not
+  dereference their private data.
+- The frequency monitor belongs to the dpll device, so only callbacks of a pin
+  of the same domain registered with dpll_pin_register() can include
+  ``.measured_freq_get``.
+
+Device drivers have to follow these rules:
+
+- A callback must not call dpll_device_change_ntf(), dpll_pin_change_ntf() or
+  any function changing the topology.
+- A callback notifies about objects of the domain it runs under with
+  __dpll_device_change_ntf() or __dpll_pin_change_ntf(). Other objects have to
+  be notified from a context that holds no domain lock, for example a work item.
+- A driver must not call dpll_device_change_ntf(), dpll_pin_change_ntf() or any
+  function changing the topology while holding a lock that its callbacks take.
+
 SyncE enablement
 ================
 For SyncE enablement it is required to allow control over dpll device

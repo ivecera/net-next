@@ -929,6 +929,10 @@ ref_pin_del:
  * @ops: ops for a dpll pin ops
  * @priv: pointer to private information of owner
  *
+ * The callbacks run under the domain of @pin. If @pin belongs to another domain
+ * than @dpll, they are not serialized with the callbacks of @dpll and @ops must
+ * not include .measured_freq_get.
+ *
  * Context: Acquires dpll_lock and domain locks
  * Return:
  * * 0 on success
@@ -1045,6 +1049,11 @@ EXPORT_SYMBOL_GPL(dpll_pin_unregister);
  *
  * Register a pin with a parent pin, create references between them and
  * between newly registered pin and dplls connected with a parent pin.
+ *
+ * The callbacks run under the domain of @pin. The parent pin and its dplls can
+ * belong to another driver, so @ops must not dereference their private data.
+ * The frequency monitor belongs to a dpll, so @ops must not include
+ * .measured_freq_get.
  *
  * Context: Acquires dpll_lock and domain locks
  * Return:
