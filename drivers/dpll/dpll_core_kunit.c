@@ -87,6 +87,7 @@ struct dt_reg {
 	struct dt_dev *dev;
 	struct dt_pin *parent;
 	struct dt_pin *notify;
+	const struct dpll_pin_ops *ops;
 	struct dpll_domain *forbid;
 	enum dpll_pin_state state;
 	enum dpll_pin_direction direction;
@@ -276,11 +277,33 @@ static int dt_lock_status_get(const struct dpll_device *dpll, void *priv,
 	return 0;
 }
 
+static int dt_freq_monitor_set(const struct dpll_device *dpll, void *priv,
+			       enum dpll_feature_state state,
+			       struct netlink_ext_ack *extack)
+{
+	return 0;
+}
+
+static int dt_freq_monitor_get(const struct dpll_device *dpll, void *priv,
+			       enum dpll_feature_state *state,
+			       struct netlink_ext_ack *extack)
+{
+	struct dt_dev *dev = priv;
+
+	dt_dev_enter(dev, dpll);
+	*state = DPLL_FEATURE_STATE_ENABLE;
+	dt_leave(dev->dom);
+
+	return 0;
+}
+
 static const struct dpll_device_ops dt_dev_ops = {
 	.mode_get = dt_mode_get,
 	.mode_set = dt_mode_set,
 	.supported_modes_get = dt_supported_modes_get,
 	.lock_status_get = dt_lock_status_get,
+	.freq_monitor_set = dt_freq_monitor_set,
+	.freq_monitor_get = dt_freq_monitor_get,
 };
 
 static int dt_frequency_get(const struct dpll_pin *pin, void *pin_priv,
@@ -433,6 +456,21 @@ static int dt_ref_sync_get(const struct dpll_pin *pin, void *pin_priv,
 	return 0;
 }
 
+static int dt_measured_freq_get(const struct dpll_pin *pin, void *pin_priv,
+				const struct dpll_device *dpll, void *dpll_priv,
+				u64 *measured_freq,
+				struct netlink_ext_ack *extack)
+{
+	struct dt_reg *reg = pin_priv;
+
+	dt_pin_enter(reg, pin);
+	atomic_inc(&reg->freq_gets);
+	*measured_freq = 1;
+	dt_leave(reg->dom);
+
+	return 0;
+}
+
 static const struct dpll_pin_ops dt_pin_ops = {
 	.frequency_get = dt_frequency_get,
 	.state_on_dpll_get = dt_state_on_dpll_get,
@@ -444,6 +482,13 @@ static const struct dpll_pin_ops dt_pin_ops = {
 	.direction_get = dt_direction_get,
 	.direction_set = dt_direction_set,
 	.ref_sync_get = dt_ref_sync_get,
+};
+
+static const struct dpll_pin_ops dt_pin_ops_measured = {
+	.measured_freq_get = dt_measured_freq_get,
+	.state_on_dpll_get = dt_state_on_dpll_get,
+	.state_on_pin_get = dt_state_on_pin_get,
+	.direction_get = dt_direction_get,
 };
 
 static const struct dpll_pin_properties dt_prop = {
@@ -552,9 +597,9 @@ static void dt_reg_release(void *data)
 
 	if (reg->parent)
 		dpll_pin_on_pin_unregister(reg->parent->pin, reg->pin->pin,
-					   &dt_pin_ops, reg);
+					   reg->ops, reg);
 	else
-		dpll_pin_unregister(reg->dev->dpll, reg->pin->pin, &dt_pin_ops,
+		dpll_pin_unregister(reg->dev->dpll, reg->pin->pin, reg->ops,
 				    reg);
 }
 
@@ -570,12 +615,14 @@ static void dt_reg_add(struct kunit *test, struct dt_reg *reg,
 	reg->parent = parent;
 	reg->state = DPLL_PIN_STATE_SELECTABLE;
 	reg->direction = DPLL_PIN_DIRECTION_INPUT;
+	if (!reg->ops)
+		reg->ops = &dt_pin_ops;
 
 	if (parent)
-		ret = dpll_pin_on_pin_register(parent->pin, pin->pin,
-					       &dt_pin_ops, reg);
+		ret = dpll_pin_on_pin_register(parent->pin, pin->pin, reg->ops,
+					       reg);
 	else
-		ret = dpll_pin_register(dev->dpll, pin->pin, &dt_pin_ops, reg);
+		ret = dpll_pin_register(dev->dpll, pin->pin, reg->ops, reg);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_ASSERT_EQ(test, kunit_add_action_or_reset(test, dt_reg_release,
 							reg), 0);
@@ -1408,6 +1455,59 @@ static void dt_test_ref_sync_pair(struct kunit *test)
 	dt_expect_events(test, (void *[]){ ctx->p.pin }, 1);
 }
 
+/* A pin with a measured frequency must be in the domain of its dpll */
+static void dt_test_measured_freq_foreign(struct kunit *test)
+{
+	struct kunit_suppressed_warning *w;
+	struct dt_ctx *ctx = test->priv;
+	struct dt_reg *reg;
+	int ret;
+
+	dt_dev_add(test, &ctx->e0, &ctx->dom_e, DT_CLOCK_ID_E, 0,
+		   DPLL_TYPE_PPS);
+	dt_dev_add(test, &ctx->f0, &ctx->dom_f, DT_CLOCK_ID_F, 0,
+		   DPLL_TYPE_PPS);
+	dt_fwnode_pin_add(test, &ctx->x, DT_CLOCK_ID_E, DT_PIN_IDX_X);
+
+	reg = &ctx->reg_x_e0;
+	reg->ops = &dt_pin_ops_measured;
+	dt_reg_add(test, reg, &ctx->dom_e, &ctx->x, &ctx->e0, NULL);
+	atomic_set(&reg->freq_gets, 0);
+	KUNIT_EXPECT_EQ(test, dt_run(test, dt_pin_ntf, &ctx->x), 0);
+	KUNIT_EXPECT_GT(test, atomic_read(&reg->freq_gets), 0);
+
+	w = kunit_start_suppress_warning(test);
+	ret = dpll_pin_register(ctx->f0.dpll, ctx->x.pin, reg->ops, reg);
+	kunit_end_suppress_warning(test, w);
+
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	if (!ret)
+		dpll_pin_unregister(ctx->f0.dpll, ctx->x.pin, reg->ops, reg);
+}
+
+/* A pin under a parent pin cannot have a measured frequency */
+static void dt_test_measured_freq_on_pin(struct kunit *test)
+{
+	struct kunit_suppressed_warning *w;
+	struct dt_ctx *ctx = test->priv;
+	struct dt_reg *reg;
+	int ret;
+
+	dt_on_pin_add(test);
+	dt_pin_add(test, &ctx->y, DT_CLOCK_ID_G, DT_PIN_IDX_Y, &dt_prop);
+	reg = &ctx->reg_c_m;
+
+	w = kunit_start_suppress_warning(test);
+	ret = dpll_pin_on_pin_register(ctx->m.pin, ctx->y.pin,
+				       &dt_pin_ops_measured, reg);
+	kunit_end_suppress_warning(test, w);
+
+	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
+	if (!ret)
+		dpll_pin_on_pin_unregister(ctx->m.pin, ctx->y.pin,
+					   &dt_pin_ops_measured, reg);
+}
+
 static struct kunit_case dt_cases[] = {
 	KUNIT_CASE(dt_test_domain_sharing),
 	KUNIT_CASE(dt_test_domain_per_module),
@@ -1432,6 +1532,8 @@ static struct kunit_case dt_cases[] = {
 	KUNIT_CASE(dt_test_set_on_pin),
 	KUNIT_CASE(dt_test_device_set_ntf),
 	KUNIT_CASE(dt_test_ref_sync_pair),
+	KUNIT_CASE(dt_test_measured_freq_foreign),
+	KUNIT_CASE(dt_test_measured_freq_on_pin),
 	{}
 };
 
