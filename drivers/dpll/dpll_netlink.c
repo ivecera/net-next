@@ -201,6 +201,30 @@ dpll_msg_add_freq_monitor(struct sk_buff *msg, struct dpll_device *dpll,
 }
 
 static int
+dpll_msg_add_reset_type_supported(struct sk_buff *msg, struct dpll_device *dpll,
+				  struct netlink_ext_ack *extack)
+{
+	DECLARE_BITMAP(types, DPLL_RESET_TYPE_MAX + 1) = { 0 };
+	const struct dpll_device_ops *ops = dpll_device_ops(dpll);
+	enum dpll_reset_type type;
+	int ret;
+
+	if (!(ops->reset && ops->supported_reset_types_get))
+		return 0;
+
+	ret = ops->supported_reset_types_get(dpll, dpll_priv(dpll), types,
+					     extack);
+	if (ret)
+		return ret;
+
+	for_each_set_bit(type, types, DPLL_RESET_TYPE_MAX + 1)
+		if (nla_put_u32(msg, DPLL_A_RESET_TYPE_SUPPORTED, type))
+			return -EMSGSIZE;
+
+	return 0;
+}
+
+static int
 dpll_msg_add_phase_offset_avg_factor(struct sk_buff *msg,
 				     struct dpll_device *dpll,
 				     struct netlink_ext_ack *extack)
@@ -822,6 +846,9 @@ dpll_device_get_one(struct dpll_device *dpll, struct sk_buff *msg,
 	if (ret)
 		return ret;
 	ret = dpll_msg_add_freq_monitor(msg, dpll, extack);
+	if (ret)
+		return ret;
+	ret = dpll_msg_add_reset_type_supported(msg, dpll, extack);
 	if (ret)
 		return ret;
 
@@ -1979,6 +2006,46 @@ int dpll_nl_device_set_doit(struct sk_buff *skb, struct genl_info *info)
 	struct dpll_device *dpll = info->user_ptr[0];
 
 	return dpll_set_from_nlattr(dpll, info);
+}
+
+int dpll_nl_device_reset_doit(struct sk_buff *skb, struct genl_info *info)
+{
+	DECLARE_BITMAP(types, DPLL_RESET_TYPE_MAX + 1) = { 0 };
+	const struct dpll_device_ops *ops;
+	struct dpll_device *dpll;
+	enum dpll_reset_type type;
+	struct nlattr *a;
+	int ret;
+
+	dpll = info->user_ptr[0];
+	if (GENL_REQ_ATTR_CHECK(info, DPLL_A_RESET_TYPE))
+		return -EINVAL;
+
+	a = info->attrs[DPLL_A_RESET_TYPE];
+	type = nla_get_u32(a);
+	ops = dpll_device_ops(dpll);
+	if (!(ops->reset && ops->supported_reset_types_get)) {
+		NL_SET_ERR_MSG_ATTR(info->extack, a,
+				    "dpll device does not support reset");
+		return -EOPNOTSUPP;
+	}
+
+	ret = ops->supported_reset_types_get(dpll, dpll_priv(dpll), types,
+					     info->extack);
+	if (ret)
+		return ret;
+
+	if (!test_bit(type, types)) {
+		NL_SET_ERR_MSG_ATTR(info->extack, a,
+				    "dpll device does not support requested reset type");
+		return -EOPNOTSUPP;
+	}
+
+	ret = ops->reset(dpll, dpll_priv(dpll), type, info->extack);
+	if (!ret)
+		__dpll_device_change_ntf(dpll);
+
+	return ret;
 }
 
 int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)

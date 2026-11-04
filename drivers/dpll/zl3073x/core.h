@@ -22,7 +22,9 @@ struct zl3073x_dpll;
 
 /* Per-operation poll timeouts */
 #define ZL_POLL_DF_READ_TIMEOUT_US	(25 * USEC_PER_MSEC)
+#define ZL_POLL_FAST_LOCK_TIMEOUT_US	(1000 * USEC_PER_MSEC)
 #define ZL_POLL_FREQ_MEAS_TIMEOUT_US	(50 * USEC_PER_MSEC)
+#define ZL_POLL_HO_CLEAR_TIMEOUT_US	(50 * USEC_PER_MSEC)
 #define ZL_POLL_HWREG_TIMEOUT_US	(50 * USEC_PER_MSEC)
 #define ZL_POLL_MB_TIMEOUT_US		(30 * USEC_PER_MSEC)
 #define ZL_POLL_PHASE_ERR_TIMEOUT_US	(50 * USEC_PER_MSEC)
@@ -34,12 +36,14 @@ struct zl3073x_dpll;
 enum zl3073x_flags {
 	ZL3073X_FLAG_REF_PHASE_COMP_32_BIT,
 	ZL3073X_FLAG_DIE_TEMP_BIT,
+	ZL3073X_FLAG_HO_CLEAR_BIT,
 	ZL3073X_FLAGS_NBITS /* must be last */
 };
 
 #define __ZL3073X_FLAG(name)	BIT(ZL3073X_FLAG_ ## name ## _BIT)
 #define ZL3073X_FLAG_REF_PHASE_COMP_32	__ZL3073X_FLAG(REF_PHASE_COMP_32)
 #define ZL3073X_FLAG_DIE_TEMP		__ZL3073X_FLAG(DIE_TEMP)
+#define ZL3073X_FLAG_HO_CLEAR		__ZL3073X_FLAG(HO_CLEAR)
 
 /**
  * struct zl3073x_chip_info - chip variant identification
@@ -125,27 +129,32 @@ int zl3073x_dev_phase_avg_factor_set(struct zl3073x_dev *zldev, u8 factor);
  * @addr: HW register to be written
  * @value: value to be written to HW register
  * @mask: bitmask indicating bits to be updated
- * @wait: number of ms to wait after register write
  */
 struct zl3073x_hwreg_seq_item {
 	u32	addr;
 	u32	value;
 	u32	mask;
-	u32	wait;
 };
 
-#define HWREG_SEQ_ITEM(_addr, _value, _mask, _wait)	\
+#define HWREG_SEQ_ITEM(_addr, _value, _mask)		\
 {							\
 	.addr	= _addr,				\
 	.value	= FIELD_PREP_CONST(_mask, _value),	\
 	.mask	= _mask,				\
-	.wait	= _wait,				\
 }
 
 int zl3073x_mb_op(struct zl3073x_dev *zldev, unsigned int op_reg, u8 op_val,
 		  unsigned int mask_reg, u16 mask_val);
-int zl3073x_poll_zero_u8(struct zl3073x_dev *zldev, unsigned int reg,
-			 u8 mask, unsigned int timeout_us);
+int zl3073x_poll_u8(struct zl3073x_dev *zldev, unsigned int reg,
+		    u8 mask, u8 expected, unsigned int timeout_us);
+
+static inline int zl3073x_poll_zero_u8(struct zl3073x_dev *zldev,
+				       unsigned int reg, u8 mask,
+				       unsigned int timeout_us)
+{
+	return zl3073x_poll_u8(zldev, reg, mask, 0, timeout_us);
+}
+
 int zl3073x_read_u8(struct zl3073x_dev *zldev, unsigned int reg, u8 *val);
 int zl3073x_read_u16(struct zl3073x_dev *zldev, unsigned int reg, u16 *val);
 int zl3073x_read_u32(struct zl3073x_dev *zldev, unsigned int reg, u32 *val);
@@ -161,6 +170,7 @@ int zl3073x_update_hwreg(struct zl3073x_dev *zldev, u32 addr, u32 value,
 int zl3073x_write_hwreg_seq(struct zl3073x_dev *zldev,
 			    const struct zl3073x_hwreg_seq_item *seq,
 			    size_t num_items);
+int zl3073x_dev_hw_reset(struct zl3073x_dev *zldev);
 
 /*****************
  * Misc operations
@@ -181,6 +191,21 @@ static inline bool
 zl3073x_dev_is_ref_phase_comp_32bit(struct zl3073x_dev *zldev)
 {
 	return zldev->info->flags & ZL3073X_FLAG_REF_PHASE_COMP_32;
+}
+
+/**
+ * zl3073x_dev_is_ho_clear_supported - check if holdover clear is supported
+ * @zldev: pointer to zl3073x device
+ *
+ * The clear_ho command in dpll_cmd register is only available on
+ * B Series and later chip variants.
+ *
+ * Return: true if holdover clear is supported, false otherwise
+ */
+static inline bool
+zl3073x_dev_is_ho_clear_supported(struct zl3073x_dev *zldev)
+{
+	return zldev->info->flags & ZL3073X_FLAG_HO_CLEAR;
 }
 
 static inline bool

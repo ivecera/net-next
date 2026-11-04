@@ -37,12 +37,12 @@ static const struct zl3073x_chip_info zl3073x_chip_ids[] = {
 	ZL_CHIP_INFO(0x1E96, 4, ZL3073X_FLAG_DIE_TEMP),
 	ZL_CHIP_INFO(0x1E97, 5, ZL3073X_FLAG_DIE_TEMP),
 	ZL_CHIP_INFO(0x1F60, 2, ZL3073X_FLAG_REF_PHASE_COMP_32),
-	ZL_CHIP_INFO(0x2E93, 1, ZL3073X_FLAG_DIE_TEMP),
-	ZL_CHIP_INFO(0x2E94, 2, ZL3073X_FLAG_DIE_TEMP),
-	ZL_CHIP_INFO(0x2E95, 3, ZL3073X_FLAG_DIE_TEMP),
-	ZL_CHIP_INFO(0x2E96, 4, ZL3073X_FLAG_DIE_TEMP),
-	ZL_CHIP_INFO(0x2E97, 5, ZL3073X_FLAG_DIE_TEMP),
-	ZL_CHIP_INFO(0x3FC4, 2, ZL3073X_FLAG_DIE_TEMP),
+	ZL_CHIP_INFO(0x2E93, 1, ZL3073X_FLAG_DIE_TEMP | ZL3073X_FLAG_HO_CLEAR),
+	ZL_CHIP_INFO(0x2E94, 2, ZL3073X_FLAG_DIE_TEMP | ZL3073X_FLAG_HO_CLEAR),
+	ZL_CHIP_INFO(0x2E95, 3, ZL3073X_FLAG_DIE_TEMP | ZL3073X_FLAG_HO_CLEAR),
+	ZL_CHIP_INFO(0x2E96, 4, ZL3073X_FLAG_DIE_TEMP | ZL3073X_FLAG_HO_CLEAR),
+	ZL_CHIP_INFO(0x2E97, 5, ZL3073X_FLAG_DIE_TEMP | ZL3073X_FLAG_HO_CLEAR),
+	ZL_CHIP_INFO(0x3FC4, 2, ZL3073X_FLAG_DIE_TEMP | ZL3073X_FLAG_HO_CLEAR),
 };
 
 #define ZL_RANGE_OFFSET		0x80
@@ -308,34 +308,33 @@ int zl3073x_write_u48(struct zl3073x_dev *zldev, unsigned int reg, u64 val)
 }
 
 /**
- * zl3073x_poll_zero_u8 - wait for register to be cleared by device
+ * zl3073x_poll_u8 - wait for register masked value to match expected value
  * @zldev: zl3073x device pointer
  * @reg: register to poll (has to be 8bit register)
  * @mask: bit mask for polling
+ * @expected: expected value after masking
  * @timeout_us: timeout in microseconds
  *
- * Waits for bits specified by @mask in register @reg value to be cleared
- * by the device.
+ * Waits until (register & @mask) == @expected.
  *
  * Returns: 0 on success, <0 on error
  */
-int zl3073x_poll_zero_u8(struct zl3073x_dev *zldev, unsigned int reg,
-			 u8 mask, unsigned int timeout_us)
+int zl3073x_poll_u8(struct zl3073x_dev *zldev, unsigned int reg,
+		    u8 mask, u8 expected, unsigned int timeout_us)
 {
 	unsigned int sleep_us = timeout_us / 50;
 	unsigned int val;
 
-	/* Check the register is 8bit */
 	if (ZL_REG_SIZE(reg) != 1) {
 		dev_err(zldev->dev, "Invalid reg 0x%04lx size for polling\n",
 			ZL_REG_ADDR(reg));
 		return -EINVAL;
 	}
 
-	/* Map the register address to virtual range */
 	reg = ZL_REG_ADDR(reg) + ZL_RANGE_OFFSET;
 
-	return regmap_read_poll_timeout(zldev->regmap, reg, val, !(val & mask),
+	return regmap_read_poll_timeout(zldev->regmap, reg, val,
+					(val & mask) == expected,
 					sleep_us, timeout_us);
 }
 
@@ -497,12 +496,61 @@ int zl3073x_write_hwreg_seq(struct zl3073x_dev *zldev,
 						  seq[i].value, seq[i].mask);
 		if (rc)
 			return rc;
-
-		if (seq->wait)
-			msleep(seq->wait);
 	}
 
 	return rc;
+}
+
+/**
+ * zl3073x_dev_hw_reset - Reset the device CPU and reload firmware and config
+ * @zldev: zl3073x device pointer
+ *
+ * Triggers a core reset that reboots the firmware and reloads the whole
+ * configuration from flash. The device is inaccessible on the control bus
+ * while the reset is in progress.
+ *
+ * Return: 0 on success, <0 on error
+ */
+int zl3073x_dev_hw_reset(struct zl3073x_dev *zldev)
+{
+	static const struct zl3073x_hwreg_seq_item hw_seq[] = {
+		HWREG_SEQ_ITEM(0x80000404, 1, BIT(0)),
+		HWREG_SEQ_ITEM(0x80000410, 1, BIT(0)),
+	};
+	u8 reset_status;
+	int rc;
+
+	/* Read reset status register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
+	if (rc)
+		return rc;
+
+	/* Arm the reset detection flag */
+	reset_status |= ZL_REG_RESET_STATUS_RESET;
+	rc = zl3073x_write_u8(zldev, ZL_REG_RESET_STATUS, reset_status);
+	if (rc)
+		return rc;
+
+	/* Trigger the core reset. The last write typically errors out as
+	 * the device CPU resets mid-transaction, so its return value is
+	 * not checked.
+	 */
+	zl3073x_write_hwreg_seq(zldev, hw_seq, ARRAY_SIZE(hw_seq));
+
+	msleep(500);
+
+	/* Read again the reset status register */
+	rc = zl3073x_read_u8(zldev, ZL_REG_RESET_STATUS, &reset_status);
+	if (rc)
+		return rc;
+
+	/* Check the reset flag was cleared by the firmware */
+	if (reset_status & ZL_REG_RESET_STATUS_RESET) {
+		dev_err(zldev->dev, "Device reset not confirmed\n");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int

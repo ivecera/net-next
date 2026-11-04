@@ -62,4 +62,30 @@ During the flash procedure, the standard firmware interface is not available,
 so the driver unregisters all DPLLs and associated pins, and re-registers them
 once the flash procedure is complete.
 
+The output clocks may glitch during the flash procedure unless they are stopped
+and disabled before the flash utility is loaded and the power-up configuration
+stored in flash has them disabled. The driver does not stop or disable the
+output clocks itself.
+
 The driver does not support any overwrite mask flags.
+
+Reload
+======
+
+The ``zl3073x`` driver supports the following ``devlink-reload`` actions:
+
+``driver_reinit``
+  Unregisters all DPLLs and associated pins and registers them again. A new
+  value of the ``clock_id`` parameter is applied by this action.
+
+``fw_activate``
+  Resets the device, which reboots the firmware and reloads the whole
+  configuration from flash, and registers all DPLLs and associated pins again.
+  A new value of the ``clock_id`` parameter is not applied by this action.
+  The output clocks may glitch during the reset unless they are stopped and
+  disabled before the reset and the power-up configuration stored in flash has
+  them disabled.
+
+If normal operation cannot be restarted, or the configuration stored in flash
+is wrong or missing, the DPLLs stay unregistered and only the devlink interface
+remains available.
