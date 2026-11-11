@@ -9,6 +9,7 @@
 
 #include <linux/dpll.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/refcount.h>
 #include <linux/ref_tracker.h>
 #include "dpll_nl.h"
@@ -16,20 +17,29 @@
 #define DPLL_REGISTERED		XA_MARK_1
 
 /**
- * struct dpll_domain - group of dpll objects
+ * struct dpll_domain - group of dpll objects sharing a lock
  * @id:			index of the domain in dpll_domain_xa
  * @clock_id:		clock_id of the objects in the domain
  * @module:		module of the objects in the domain
  * @refcount:		number of dpll devices and pins in the domain
+ * @lock:		serializes driver callbacks of the domain
  *
  * All dpll devices and pins created with the same (module, clock_id) pair
  * belong to one domain, in practice to one chip or card.
+ *
+ * Callbacks of a device run under the domain of the device and callbacks of a
+ * pin under the domain of the pin, whichever driver registered them. Only one
+ * domain lock is held at a time, so domains have no lock order.
  **/
 struct dpll_domain {
 	u32 id;
 	u64 clock_id;
 	struct module *module;
 	refcount_t refcount;
+	/* Serializes the driver callbacks of all DPLL devices and pins
+	 * that share one (module, clock_id) pair.
+	 */
+	struct mutex lock;
 };
 
 /**

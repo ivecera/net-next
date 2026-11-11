@@ -110,9 +110,11 @@ static struct dpll_domain *dpll_domain_get(u64 clock_id, struct module *module)
 	domain->clock_id = clock_id;
 	domain->module = module;
 	refcount_set(&domain->refcount, 1);
+	mutex_init(&domain->lock);
 	ret = xa_alloc(&dpll_domain_xa, &domain->id, domain, xa_limit_32b,
 		       GFP_KERNEL);
 	if (ret) {
+		mutex_destroy(&domain->lock);
 		kfree(domain);
 		return ERR_PTR(ret);
 	}
@@ -126,6 +128,7 @@ static void dpll_domain_put(struct dpll_domain *domain)
 
 	if (refcount_dec_and_test(&domain->refcount)) {
 		xa_erase(&dpll_domain_xa, domain->id);
+		mutex_destroy(&domain->lock);
 		kfree(domain);
 	}
 }
@@ -517,7 +520,7 @@ dpll_device_registration_find(struct dpll_device *dpll,
  *
  * Make dpll device available for user space.
  *
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and the domain lock of @dpll
  * Return:
  * * 0 on success
  * * negative - error value
@@ -576,7 +579,7 @@ EXPORT_SYMBOL_GPL(dpll_device_register);
  *
  * Unregister device, make it unavailable for userspace.
  * Note: It does not free the memory
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and the domain lock of @dpll
  */
 void dpll_device_unregister(struct dpll_device *dpll,
 			    const struct dpll_device_ops *ops, void *priv)
@@ -925,7 +928,7 @@ ref_pin_del:
  * @ops: ops for a dpll pin ops
  * @priv: pointer to private information of owner
  *
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and domain locks
  * Return:
  * * 0 on success
  * * negative - error value
@@ -986,7 +989,9 @@ static void dpll_pin_ref_sync_pair_del(u32 ref_sync_pin_id)
 		ref_sync_pin = xa_load(&pin->ref_sync_pins, ref_sync_pin_id);
 		if (ref_sync_pin) {
 			xa_erase(&pin->ref_sync_pins, ref_sync_pin_id);
+			mutex_lock(&pin->domain->lock);
 			__dpll_pin_change_ntf(pin);
+			mutex_unlock(&pin->domain->lock);
 		}
 	}
 }
@@ -1013,7 +1018,7 @@ __dpll_pin_unregister(struct dpll_device *dpll, struct dpll_pin *pin,
  * @priv: pointer to private information of owner
  *
  * Note: It does not free the memory
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and domain locks
  */
 void dpll_pin_unregister(struct dpll_device *dpll, struct dpll_pin *pin,
 			 const struct dpll_pin_ops *ops, void *priv)
@@ -1039,7 +1044,7 @@ EXPORT_SYMBOL_GPL(dpll_pin_unregister);
  * Register a pin with a parent pin, create references between them and
  * between newly registered pin and dplls connected with a parent pin.
  *
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and domain locks
  * Return:
  * * 0 on success
  * * negative - error value
@@ -1096,7 +1101,7 @@ EXPORT_SYMBOL_GPL(dpll_pin_on_pin_register);
  * @ops: ops for a dpll pin
  * @priv: pointer to private information of owner
  *
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and domain locks
  * Note: It does not free the memory
  */
 void dpll_pin_on_pin_unregister(struct dpll_pin *parent, struct dpll_pin *pin,
@@ -1126,7 +1131,7 @@ EXPORT_SYMBOL_GPL(dpll_pin_on_pin_unregister);
  *
  * Once pins are paired, the user-space configuration of reference sync pair
  * is possible.
- * Context: Acquires a lock (dpll_lock)
+ * Context: Acquires dpll_lock and domain locks
  * Return:
  * * 0 on success
  * * negative - error value
@@ -1139,8 +1144,11 @@ int dpll_pin_ref_sync_pair_add(struct dpll_pin *pin,
 	mutex_lock(&dpll_lock);
 	ret = xa_insert(&pin->ref_sync_pins, ref_sync_pin->id,
 			ref_sync_pin, GFP_KERNEL);
-	if (!ret)
+	if (!ret) {
+		mutex_lock(&pin->domain->lock);
 		__dpll_pin_change_ntf(pin);
+		mutex_unlock(&pin->domain->lock);
+	}
 	mutex_unlock(&dpll_lock);
 
 	return ret;
