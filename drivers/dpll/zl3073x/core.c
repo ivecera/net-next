@@ -860,16 +860,14 @@ zl3073x_dev_phase_meas_setup(struct zl3073x_dev *zldev)
 /**
  * zl3073x_dev_start - Start normal operation
  * @zldev: zl3073x device pointer
- * @full: perform full initialization
  *
- * The function starts normal operation, which means registering all DPLLs and
- * their pins, and starting monitoring. If full initialization is requested,
- * the function additionally initializes the phase offset measurement block and
- * fetches hardware-invariant parameters.
+ * The function starts normal operation, which means fetching the device
+ * state, initializing the phase offset measurement block, registering all
+ * DPLLs and their pins, and starting monitoring.
  *
  * Return: 0 on success, <0 on error
  */
-int zl3073x_dev_start(struct zl3073x_dev *zldev, bool full)
+int zl3073x_dev_start(struct zl3073x_dev *zldev)
 {
 	struct zl3073x_dpll *zldpll;
 	u8 info;
@@ -895,19 +893,16 @@ int zl3073x_dev_start(struct zl3073x_dev *zldev, bool full)
 		return 0;
 	}
 
-	if (full) {
-		/* Fetch device state */
-		rc = zl3073x_dev_state_fetch(zldev);
-		if (rc)
-			return rc;
+	/* Fetch device state */
+	rc = zl3073x_dev_state_fetch(zldev);
+	if (rc)
+		return rc;
 
-		/* Setup phase offset measurement block */
-		rc = zl3073x_dev_phase_meas_setup(zldev);
-		if (rc) {
-			dev_err(zldev->dev,
-				"Failed to setup phase measurement\n");
-			return rc;
-		}
+	/* Setup phase offset measurement block */
+	rc = zl3073x_dev_phase_meas_setup(zldev);
+	if (rc) {
+		dev_err(zldev->dev, "Failed to setup phase measurement\n");
+		return rc;
 	}
 
 	/* Register all DPLLs */
@@ -1012,7 +1007,7 @@ zl3073x_devm_dpll_init(struct zl3073x_dev *zldev)
 	zldev->kworker = kworker;
 
 	/* Start normal operation */
-	rc = zl3073x_dev_start(zldev, true);
+	rc = zl3073x_dev_start(zldev);
 	if (rc) {
 		dev_err_probe(zldev->dev, rc, "Failed to start device\n");
 		goto error;

@@ -125,7 +125,7 @@ zl3073x_devlink_reload_up(struct devlink *devlink,
 	}
 
 	/* Restart normal operation */
-	rc = zl3073x_dev_start(zldev, false);
+	rc = zl3073x_dev_start(zldev);
 	if (rc)
 		dev_warn(zldev->dev, "Failed to re-start normal operation\n");
 
@@ -180,7 +180,7 @@ zl3073x_devlink_flash_prepare(struct zl3073x_dev *zldev,
 					     NULL, 0, 0);
 
 		/* Resume normal operation */
-		zl3073x_dev_start(zldev, true);
+		zl3073x_dev_start(zldev);
 
 		return rc;
 	}
@@ -208,7 +208,7 @@ zl3073x_devlink_flash_finish(struct zl3073x_dev *zldev,
 	zl3073x_flash_mode_leave(zldev, extack);
 
 	/* Resume normal operation */
-	rc = zl3073x_dev_start(zldev, true);
+	rc = zl3073x_dev_start(zldev);
 	if (rc)
 		zl3073x_devlink_flash_notify(zldev,
 					     "Failed to start normal operation",

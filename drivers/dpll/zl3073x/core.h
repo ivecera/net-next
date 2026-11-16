@@ -106,7 +106,7 @@ extern const struct regmap_config zl3073x_regmap_config;
 struct zl3073x_dev *zl3073x_devm_alloc(struct device *dev);
 int zl3073x_dev_probe(struct zl3073x_dev *zldev);
 
-int zl3073x_dev_start(struct zl3073x_dev *zldev, bool full);
+int zl3073x_dev_start(struct zl3073x_dev *zldev);
 void zl3073x_dev_stop(struct zl3073x_dev *zldev);
 
 static inline u8 zl3073x_dev_phase_avg_factor_get(struct zl3073x_dev *zldev)
