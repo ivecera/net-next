@@ -6,6 +6,7 @@
  *  Copyright (c) 2023 Intel and affiliates
  *
  */
+#include <kunit/visibility.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
@@ -861,27 +862,39 @@ err_free_msg:
 
 int dpll_device_create_ntf(struct dpll_device *dpll)
 {
+	int ret;
+
+	mutex_lock(&dpll->domain->lock);
 	dpll_device_notify(dpll, DPLL_DEVICE_CREATED);
-	return dpll_device_event_send(DPLL_CMD_DEVICE_CREATE_NTF, dpll);
+	ret = dpll_device_event_send(DPLL_CMD_DEVICE_CREATE_NTF, dpll);
+	mutex_unlock(&dpll->domain->lock);
+
+	return ret;
 }
 
 int dpll_device_delete_ntf(struct dpll_device *dpll)
 {
+	int ret;
+
+	mutex_lock(&dpll->domain->lock);
 	dpll_device_notify(dpll, DPLL_DEVICE_DELETED);
-	return dpll_device_event_send(DPLL_CMD_DEVICE_DELETE_NTF, dpll);
+	ret = dpll_device_event_send(DPLL_CMD_DEVICE_DELETE_NTF, dpll);
+	mutex_unlock(&dpll->domain->lock);
+
+	return ret;
 }
 
 /**
  * __dpll_device_change_ntf - notify that the dpll device has been changed
  * @dpll: registered dpll pointer
  *
- * Context: caller must hold dpll_lock. Suitable for use inside device
- *          callbacks which are already invoked under dpll_lock.
+ * Context: caller must hold dpll_lock and the domain lock of @dpll.
+ *          Suitable for use inside callbacks running under these locks.
  * Return: 0 if succeeds, error code otherwise.
  */
 int __dpll_device_change_ntf(struct dpll_device *dpll)
 {
-	lockdep_assert_held(&dpll_lock);
+	lockdep_assert_held(&dpll->domain->lock);
 	dpll_device_notify(dpll, DPLL_DEVICE_CHANGED);
 	return dpll_device_event_send(DPLL_CMD_DEVICE_CHANGE_NTF, dpll);
 }
@@ -891,16 +904,18 @@ EXPORT_SYMBOL_GPL(__dpll_device_change_ntf);
  * dpll_device_change_ntf - notify that the dpll device has been changed
  * @dpll: registered dpll pointer
  *
- * Context: acquires and holds a dpll_lock.
+ * Context: acquires and holds dpll_lock and the domain lock of @dpll.
  * Return: 0 if succeeds, error code otherwise.
  */
 int dpll_device_change_ntf(struct dpll_device *dpll)
 {
 	int ret;
 
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
+	mutex_lock(&dpll->domain->lock);
 	ret = __dpll_device_change_ntf(dpll);
-	mutex_unlock(&dpll_lock);
+	mutex_unlock(&dpll->domain->lock);
+	up_read(&dpll_lock);
 
 	return ret;
 }
@@ -941,27 +956,39 @@ err_free_msg:
 
 int dpll_pin_create_ntf(struct dpll_pin *pin, u64 src_clock_id)
 {
+	int ret;
+
+	mutex_lock(&pin->domain->lock);
 	dpll_pin_notify(pin, src_clock_id, DPLL_PIN_CREATED);
-	return dpll_pin_event_send(DPLL_CMD_PIN_CREATE_NTF, pin);
+	ret = dpll_pin_event_send(DPLL_CMD_PIN_CREATE_NTF, pin);
+	mutex_unlock(&pin->domain->lock);
+
+	return ret;
 }
 
 int dpll_pin_delete_ntf(struct dpll_pin *pin, u64 src_clock_id)
 {
+	int ret;
+
+	mutex_lock(&pin->domain->lock);
 	dpll_pin_notify(pin, src_clock_id, DPLL_PIN_DELETED);
-	return dpll_pin_event_send(DPLL_CMD_PIN_DELETE_NTF, pin);
+	ret = dpll_pin_event_send(DPLL_CMD_PIN_DELETE_NTF, pin);
+	mutex_unlock(&pin->domain->lock);
+
+	return ret;
 }
 
 /**
  * __dpll_pin_change_ntf - notify that the pin has been changed
  * @pin: registered pin pointer
  *
- * Context: caller must hold dpll_lock. Suitable for use inside pin
- *          callbacks which are already invoked under dpll_lock.
+ * Context: caller must hold dpll_lock and the domain lock of @pin.
+ *          Suitable for use inside callbacks running under these locks.
  * Return: 0 if succeeds, error code otherwise.
  */
 int __dpll_pin_change_ntf(struct dpll_pin *pin)
 {
-	lockdep_assert_held(&dpll_lock);
+	lockdep_assert_held(&pin->domain->lock);
 	dpll_pin_notify(pin, pin->clock_id, DPLL_PIN_CHANGED);
 	return dpll_pin_event_send(DPLL_CMD_PIN_CHANGE_NTF, pin);
 }
@@ -971,16 +998,18 @@ EXPORT_SYMBOL_GPL(__dpll_pin_change_ntf);
  * dpll_pin_change_ntf - notify that the pin has been changed
  * @pin: registered pin pointer
  *
- * Context: acquires and holds a dpll_lock.
+ * Context: acquires and holds dpll_lock and the domain lock of @pin.
  * Return: 0 if succeeds, error code otherwise.
  */
 int dpll_pin_change_ntf(struct dpll_pin *pin)
 {
 	int ret;
 
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
+	mutex_lock(&pin->domain->lock);
 	ret = __dpll_pin_change_ntf(pin);
-	mutex_unlock(&dpll_lock);
+	mutex_unlock(&pin->domain->lock);
+	up_read(&dpll_lock);
 
 	return ret;
 }
@@ -1767,7 +1796,7 @@ int dpll_nl_pin_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 	unsigned long i;
 	int ret = 0;
 
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
 	xa_for_each_marked_start(&dpll_pin_xa, i, pin, DPLL_REGISTERED,
 				 ctx->idx) {
 		if (!dpll_pin_available(pin))
@@ -1780,7 +1809,9 @@ int dpll_nl_pin_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 			ret = -EMSGSIZE;
 			break;
 		}
+		mutex_lock(&pin->domain->lock);
 		ret = dpll_cmd_pin_get_one(skb, pin, cb->extack);
+		mutex_unlock(&pin->domain->lock);
 		if (ret) {
 			genlmsg_cancel(skb, hdr);
 			if (ret == -ENODEV) {
@@ -1791,7 +1822,7 @@ int dpll_nl_pin_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 		}
 		genlmsg_end(skb, hdr);
 	}
-	mutex_unlock(&dpll_lock);
+	up_read(&dpll_lock);
 
 	if (ret == -EMSGSIZE) {
 		ctx->idx = i;
@@ -1806,6 +1837,7 @@ int dpll_nl_pin_set_doit(struct sk_buff *skb, struct genl_info *info)
 
 	return dpll_pin_set_from_nlattr(pin, info);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_nl_pin_set_doit);
 
 static struct dpll_device *
 dpll_device_find(u64 clock_id, struct nlattr *mod_name_attr,
@@ -1980,6 +2012,7 @@ int dpll_nl_device_set_doit(struct sk_buff *skb, struct genl_info *info)
 
 	return dpll_set_from_nlattr(dpll, info);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_nl_device_set_doit);
 
 int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 {
@@ -1989,7 +2022,7 @@ int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 	unsigned long i;
 	int ret = 0;
 
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
 	xa_for_each_marked_start(&dpll_device_xa, i, dpll, DPLL_REGISTERED,
 				 ctx->idx) {
 		hdr = genlmsg_put(skb, NETLINK_CB(cb->skb).portid,
@@ -1999,14 +2032,16 @@ int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 			ret = -EMSGSIZE;
 			break;
 		}
+		mutex_lock(&dpll->domain->lock);
 		ret = dpll_device_get_one(dpll, skb, cb->extack);
+		mutex_unlock(&dpll->domain->lock);
 		if (ret) {
 			genlmsg_cancel(skb, hdr);
 			break;
 		}
 		genlmsg_end(skb, hdr);
 	}
-	mutex_unlock(&dpll_lock);
+	up_read(&dpll_lock);
 
 	if (ret == -EMSGSIZE) {
 		ctx->idx = i;
@@ -2018,35 +2053,43 @@ int dpll_nl_device_get_dumpit(struct sk_buff *skb, struct netlink_callback *cb)
 int dpll_pre_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 		  struct genl_info *info)
 {
+	struct dpll_device *dpll;
 	u32 id;
 
 	if (GENL_REQ_ATTR_CHECK(info, DPLL_A_ID))
 		return -EINVAL;
 
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
 	id = nla_get_u32(info->attrs[DPLL_A_ID]);
-	info->user_ptr[0] = dpll_device_get_by_id(id);
-	if (!info->user_ptr[0]) {
+	dpll = dpll_device_get_by_id(id);
+	if (!dpll) {
 		NL_SET_ERR_MSG(info->extack, "device not found");
 		goto unlock;
 	}
+	info->user_ptr[0] = dpll;
+	mutex_lock(&dpll->domain->lock);
 	return 0;
 unlock:
-	mutex_unlock(&dpll_lock);
+	up_read(&dpll_lock);
 	return -ENODEV;
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_pre_doit);
 
 void dpll_post_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 		    struct genl_info *info)
 {
-	mutex_unlock(&dpll_lock);
+	struct dpll_device *dpll = info->user_ptr[0];
+
+	mutex_unlock(&dpll->domain->lock);
+	up_read(&dpll_lock);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_post_doit);
 
 int
 dpll_lock_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 	       struct genl_info *info)
 {
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
 
 	return 0;
 }
@@ -2055,37 +2098,43 @@ void
 dpll_unlock_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 		 struct genl_info *info)
 {
-	mutex_unlock(&dpll_lock);
+	up_read(&dpll_lock);
 }
 
 int dpll_pin_pre_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 		      struct genl_info *info)
 {
+	struct dpll_pin *pin;
 	int ret;
 
-	mutex_lock(&dpll_lock);
+	down_read(&dpll_lock);
 	if (GENL_REQ_ATTR_CHECK(info, DPLL_A_PIN_ID)) {
 		ret = -EINVAL;
 		goto unlock_dev;
 	}
-	info->user_ptr[0] = xa_load(&dpll_pin_xa,
-				    nla_get_u32(info->attrs[DPLL_A_PIN_ID]));
-	if (!info->user_ptr[0] ||
-	    !dpll_pin_available(info->user_ptr[0])) {
+	pin = xa_load(&dpll_pin_xa, nla_get_u32(info->attrs[DPLL_A_PIN_ID]));
+	if (!pin || !dpll_pin_available(pin)) {
 		NL_SET_ERR_MSG(info->extack, "pin not found");
 		ret = -ENODEV;
 		goto unlock_dev;
 	}
+	info->user_ptr[0] = pin;
+	mutex_lock(&pin->domain->lock);
 
 	return 0;
 
 unlock_dev:
-	mutex_unlock(&dpll_lock);
+	up_read(&dpll_lock);
 	return ret;
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_pin_pre_doit);
 
 void dpll_pin_post_doit(const struct genl_split_ops *ops, struct sk_buff *skb,
 			struct genl_info *info)
 {
-	mutex_unlock(&dpll_lock);
+	struct dpll_pin *pin = info->user_ptr[0];
+
+	mutex_unlock(&pin->domain->lock);
+	up_read(&dpll_lock);
 }
+EXPORT_SYMBOL_IF_KUNIT(dpll_pin_post_doit);

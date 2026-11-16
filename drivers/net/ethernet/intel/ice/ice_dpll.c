@@ -1178,8 +1178,8 @@ ice_dpll_input_state_get(const struct dpll_pin *pin, void *pin_priv,
  * peer via dpll netlink learn about the update.
  *
  * Context: Called from dpll_pin_ops callbacks after pf->dplls.lock is
- *          released.  Uses __dpll_pin_change_ntf() because dpll_lock is
- *          still held by the dpll netlink layer.
+ *          released.  Uses __dpll_pin_change_ntf() because the domain lock
+ *          is still held by the dpll core.
  */
 static void ice_dpll_sw_pin_notify_peer(struct ice_dplls *d,
 					struct ice_dpll_pin *changed)
@@ -2915,7 +2915,6 @@ ice_dpll_tspll_state_on_dpll_set(const struct dpll_pin *pin, void *pin_priv,
 	struct ice_dpll_pin *p = pin_priv;
 	struct ice_pf *pf = p->pf;
 	enum ice_clk_src clk_src;
-	bool changed = false;
 	struct ice_dpll *tp;
 	int ret;
 
@@ -2940,23 +2939,16 @@ ice_dpll_tspll_state_on_dpll_set(const struct dpll_pin *pin, void *pin_priv,
 
 		new_state = ice_dpll_tspll_lock_status_get(pf, false);
 
-		/* Sync the cached lock state to what we just observed from HW
-		 * so ice_dpll_periodic_work_e825() (cached path) does not emit
-		 * a spurious UNLOCKED notification between now and the next
-		 * PTP monitor tick.
+		/* Sync the cached lock state to what we just observed from HW.
+		 * ice_dpll_periodic_work_e825() reads it (cached path),
+		 * compares it with prev_dpll_state and sends the notification.
+		 * dpll_state lets a device get report it right away.
 		 */
 		WRITE_ONCE(pf->ptp.tspll_locked,
 			   new_state == DPLL_LOCK_STATUS_LOCKED);
-
-		if (tp->prev_dpll_state != new_state) {
-			tp->dpll_state = new_state;
-			tp->prev_dpll_state = new_state;
-			changed = true;
-		}
+		tp->dpll_state = new_state;
 	}
 	mutex_unlock(&pf->dplls.lock);
-	if (changed)
-		__dpll_device_change_ntf(tp->dpll);
 	/* TSPLL reconfiguration may complete before lock is reacquired.
 	 * PTP periodic monitoring tracks and restores the final lock state.
 	 */
@@ -3373,8 +3365,8 @@ static void ice_dpll_periodic_work_e825(struct ice_pf *pf)
 	mutex_lock(&pf->dplls.lock);
 	new_state = ice_dpll_tspll_lock_status_get(pf, true);
 
+	tp->dpll_state = new_state;
 	if (tp->prev_dpll_state != new_state) {
-		tp->dpll_state = new_state;
 		tp->prev_dpll_state = new_state;
 		changed = true;
 	}

@@ -23,6 +23,19 @@ config DPLL_REFCNT_TRACKER
 
 	  If unsure, say N.
 
+config DPLL_KUNIT_TEST
+	tristate "KUnit tests for DPLL core" if !KUNIT_ALL_TESTS
+	depends on KUNIT && NET
+	select DPLL
+	default KUNIT_ALL_TESTS
+	help
+	  KUnit tests for locking in the DPLL core. They use a mock driver
+	  to check that callbacks run under the locks of their domains and
+	  that unrelated domains do not block each other. The checks of held
+	  locks need PROVE_LOCKING.
+
+	  If unsure, say N.
+
 source "drivers/dpll/zl3073x/Kconfig"
 
 endmenu

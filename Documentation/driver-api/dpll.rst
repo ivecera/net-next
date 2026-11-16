@@ -675,6 +675,60 @@ In the error path we have to rewind every allocation in the reverse order:
 
 More complex example can be found in Intel's ICE driver or nVidia's mlx5 driver.
 
+Locking
+=======
+
+The subsystem uses two levels of locks, always taken in this order:
+
+- ``dpll_lock`` protects the topology of dpll devices and pins and their
+  lifetime. Functions changing the topology, for example dpll_pin_register(),
+  take it for write and send the create and delete notifications under it.
+  Netlink requests, each part of a dump and change notifications take it for
+  read for their whole duration.
+- A domain lock serializes driver callbacks. All dpll devices and pins created
+  with the same module and ``clock_id`` belong to one domain, in practice to
+  one chip or card.
+
+A netlink request addressing a device or a pin by its ID holds the domain lock
+of that object from start to end. A notification holds it while its message is
+built and sent, so messages of one object are sent in the order they were
+built. Only one domain lock is held at a time, so domains have no lock order,
+and callbacks of different domains can run concurrently.
+
+Callbacks of a dpll device run under the domain of the device. Callbacks of a
+pin run under the domain of the pin, whichever driver registered them:
+
+- A driver registering a pin of another driver with its dpll device has these
+  callbacks serialized with the driver that created the pin, not with the other
+  callbacks of its device, so it has to protect the state they share by itself.
+  A callback stuck in such a registration stops the domain of the pin.
+- The parent pin of a pin registered with dpll_pin_on_pin_register() and its
+  dpll devices can belong to another driver, so the callback must not
+  dereference their private data.
+- The frequency monitor belongs to the dpll device, so only callbacks of a pin
+  of the same domain registered with dpll_pin_register() can include
+  ``.measured_freq_get``.
+- The reference sync callbacks of a pin get the private data of the other pin
+  of the pair, so both pins of a pair added by dpll_pin_ref_sync_pair_add()
+  have to belong to one domain.
+
+Device drivers have to follow these rules:
+
+- A callback must not call a dpll function that takes ``dpll_lock``, nor wait
+  for a work item that calls one. All exported dpll functions take it, except
+  __dpll_device_change_ntf(), __dpll_pin_change_ntf(), dpll_netdev_pin_set()
+  and dpll_netdev_pin_clear().
+- A callback notifies about objects of the domain it runs under with
+  __dpll_device_change_ntf() or __dpll_pin_change_ntf(). Other objects have to
+  be notified from a context that holds no domain lock, for example a work item.
+- A notifier callback added by register_dpll_notifier() runs under
+  ``dpll_lock`` and the domain lock of the object it is called for, which can
+  belong to another driver, so the rules for callbacks apply to it as well. It
+  can queue a work item to do the rest.
+- A driver must not call a dpll function that takes ``dpll_lock``, nor wait for
+  a work item that calls one, while holding a lock that its callbacks or its
+  notifier callbacks take.
+
 SyncE enablement
 ================
 For SyncE enablement it is required to allow control over dpll device
